@@ -138,14 +138,55 @@ header p {
   border-color: var(--accent-dim);
 }
 
+.entry-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: 0.5rem;
+  gap: 1rem;
+}
+
+.timestamp-container {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
 .entry-card .timestamp {
   display: block;
   font-size: 0.8rem;
   color: var(--accent);
   font-weight: 500;
-  margin-bottom: 0.5rem;
   text-transform: uppercase;
   letter-spacing: 0.04em;
+}
+
+.entry-card .edited-timestamp {
+  display: block;
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  font-style: italic;
+  letter-spacing: 0.02em;
+}
+
+.edit-button {
+  padding: 0.4rem 0.8rem;
+  font-family: 'DM Sans', sans-serif;
+  font-size: 0.85rem;
+  font-weight: 500;
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.2s;
+  white-space: nowrap;
+}
+
+.edit-button:hover {
+  background: var(--accent-dim);
+  color: #0d1117;
+  border-color: var(--accent-dim);
 }
 
 .entry-card .content {
@@ -153,6 +194,75 @@ header p {
   font-size: 1.1rem;
   color: var(--text-primary);
   white-space: pre-wrap;
+}
+
+.edit-form {
+  margin-top: 0.75rem;
+}
+
+.edit-form textarea {
+  width: 100%;
+  min-height: 120px;
+  padding: 0.875rem;
+  font-family: 'Crimson Pro', Georgia, serif;
+  font-size: 1.1rem;
+  background: var(--bg-primary);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  color: var(--text-primary);
+  resize: vertical;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+
+.edit-form textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-glow);
+}
+
+.edit-buttons {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 0.75rem;
+}
+
+.save-edit-button,
+.cancel-edit-button {
+  padding: 0.625rem 1.25rem;
+  font-family: 'DM Sans', sans-serif;
+  font-size: 0.9rem;
+  font-weight: 600;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.save-edit-button {
+  background: linear-gradient(135deg, var(--accent) 0%, var(--accent-dim) 100%);
+  color: #0d1117;
+  flex: 1;
+}
+
+.save-edit-button:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 20px var(--accent-glow);
+}
+
+.save-edit-button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.cancel-edit-button {
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+  border: 1px solid var(--border-color);
+}
+
+.cancel-edit-button:hover:not(:disabled) {
+  background: var(--bg-primary);
+  color: var(--text-primary);
 }
 
 .empty-state {

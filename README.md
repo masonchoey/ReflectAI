@@ -5,7 +5,9 @@ A personal journaling application with FastAPI backend, React frontend, and Post
 ## Features
 
 - ✍️ Write and save journal entries
+- ✏️ Edit previous journal entries
 - 📅 Automatic timestamps for each entry
+- 🕐 Track when entries were edited
 - 📋 View all past entries in reverse chronological order
 
 ## Tech Stack
@@ -43,6 +45,9 @@ source venv/bin/activate  # On macOS/Linux
 # Install dependencies
 pip install -r requirements.txt
 
+# If upgrading from a previous version, run the migration
+python migrate_add_edited_at.py
+
 # Set environment variable (optional - defaults to localhost)
 export DATABASE_URL=postgresql://postgres:postgres@localhost:5432/reflectai
 
@@ -72,6 +77,7 @@ The frontend will be available at `http://localhost:5173`
 - `GET /entries` - List all journal entries
 - `POST /entries` - Create a new entry
 - `GET /entries/{id}` - Get a specific entry
+- `PUT /entries/{id}` - Update an existing entry
 
 ## Future Features (Roadmap)
 
