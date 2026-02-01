@@ -10,6 +10,8 @@ function App() {
   const [error, setError] = useState(null)
   const [editingId, setEditingId] = useState(null)
   const [editContent, setEditContent] = useState('')
+  const [analyzingId, setAnalyzingId] = useState(null)
+  const [emotionResults, setEmotionResults] = useState({})
 
   useEffect(() => {
     fetchEntries()
@@ -102,6 +104,70 @@ function App() {
     }
   }
 
+  const handleAnalyzeEmotion = async (entryId) => {
+    try {
+      setAnalyzingId(entryId)
+      const response = await fetch(`${API_URL}/entries/${entryId}/analyze`, {
+        method: 'POST'
+      })
+      if (!response.ok) throw new Error('Failed to analyze emotion')
+      const result = await response.json()
+      
+      // Update the entry with the emotion data
+      setEntries(entries.map(entry => 
+        entry.id === entryId 
+          ? { ...entry, emotion: result.emotion, emotion_score: result.emotion_score }
+          : entry
+      ))
+      
+      // Store the full emotion results for display
+      setEmotionResults(prev => ({
+        ...prev,
+        [entryId]: result.all_emotions
+      }))
+      
+      setError(null)
+    } catch (err) {
+      setError('Could not analyze emotion. Please try again.')
+    } finally {
+      setAnalyzingId(null)
+    }
+  }
+
+  const getEmotionEmoji = (emotion) => {
+    const emojiMap = {
+      admiration: '🤩',
+      amusement: '😄',
+      anger: '😠',
+      annoyance: '😒',
+      approval: '👍',
+      caring: '🤗',
+      confusion: '😕',
+      curiosity: '🤔',
+      desire: '😍',
+      disappointment: '😞',
+      disapproval: '👎',
+      disgust: '🤢',
+      embarrassment: '😳',
+      excitement: '🎉',
+      fear: '😨',
+      gratitude: '🙏',
+      grief: '😢',
+      joy: '😊',
+      love: '❤️',
+      nervousness: '😰',
+      optimism: '🌟',
+      pride: '😌',
+      realization: '💡',
+      relief: '😮‍💨',
+      remorse: '😔',
+      sadness: '😢',
+      surprise: '😲',
+      neutral: '😐'
+    }
+    return emojiMap[emotion] || '🔮'
+  }
+
   return (
     <div className="app">
       <header>
@@ -146,13 +212,23 @@ function App() {
                     )}
                   </div>
                   {editingId !== entry.id && (
-                    <button 
-                      className="edit-button"
-                      onClick={() => handleEdit(entry)}
-                      aria-label="Edit entry"
-                    >
-                      ✏️ Edit
-                    </button>
+                    <div className="entry-actions">
+                      <button 
+                        className="analyze-button"
+                        onClick={() => handleAnalyzeEmotion(entry.id)}
+                        disabled={analyzingId === entry.id}
+                        aria-label="Analyze emotion"
+                      >
+                        {analyzingId === entry.id ? '🔄 Analyzing...' : '🔮 Analyze Emotion'}
+                      </button>
+                      <button 
+                        className="edit-button"
+                        onClick={() => handleEdit(entry)}
+                        aria-label="Edit entry"
+                      >
+                        ✏️ Edit
+                      </button>
+                    </div>
                   )}
                 </div>
                 
@@ -182,7 +258,42 @@ function App() {
                     </div>
                   </div>
                 ) : (
-                  <p className="content">{entry.content}</p>
+                  <>
+                    <p className="content">{entry.content}</p>
+                    
+                    {entry.emotion && (
+                      <div className="emotion-display">
+                        <div className="primary-emotion">
+                          <span className="emotion-emoji">{getEmotionEmoji(entry.emotion)}</span>
+                          <span className="emotion-label">{entry.emotion}</span>
+                          <span className="emotion-confidence">
+                            {(entry.emotion_score * 100).toFixed(1)}% confidence
+                          </span>
+                        </div>
+                        
+                        {emotionResults[entry.id] && (
+                          <div className="emotion-breakdown">
+                            <span className="breakdown-label">Top emotions:</span>
+                            <div className="emotion-bars">
+                              {emotionResults[entry.id].slice(0, 5).map((emotion, idx) => (
+                                <div key={idx} className="emotion-bar-item">
+                                  <span className="bar-emoji">{getEmotionEmoji(emotion.label)}</span>
+                                  <span className="bar-label">{emotion.label}</span>
+                                  <div className="bar-container">
+                                    <div 
+                                      className="bar-fill"
+                                      style={{ width: `${emotion.score * 100}%` }}
+                                    />
+                                  </div>
+                                  <span className="bar-score">{(emotion.score * 100).toFixed(1)}%</span>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </>
                 )}
               </article>
             ))}

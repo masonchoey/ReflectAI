@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, Text, DateTime
+from sqlalchemy import Column, Integer, Text, DateTime, String, Float
 from sqlalchemy.sql import func
 from database import Base
 from datetime import datetime, timezone
@@ -11,3 +11,5 @@ class JournalEntry(Base):
     content = Column(Text, nullable=False)
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     edited_at = Column(DateTime(timezone=True), nullable=True)
+    emotion = Column(String(50), nullable=True)
+    emotion_score = Column(Float, nullable=True)
