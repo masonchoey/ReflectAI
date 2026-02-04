@@ -1,4 +1,6 @@
 import os
+import asyncio
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, Depends, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -14,12 +16,13 @@ from jose import JWTError, jwt
 from dotenv import load_dotenv
 
 from database import engine, get_db, Base
-from models import JournalEntry, User
+from models import JournalEntry, User, ClusteringRun, Cluster, EntryClusterAssignment
 from schemas import (
     JournalEntryCreate, JournalEntryUpdate, JournalEntryResponse,
     EmotionAnalysisResponse, EmotionResult, EmbeddingResponse,
     SimilarEntry, SemanticSearchResponse, TextSearchRequest, TextSearchResponse,
-    TokenizationResponse, GoogleAuthRequest, AuthResponse, UserResponse
+    TokenizationResponse, GoogleAuthRequest, AuthResponse, UserResponse,
+    ClusteringRunResponse, ClusterInfoResponse, ClusterPoint, ClusterVisualizationResponse
 )
 
 load_dotenv()
@@ -34,22 +37,56 @@ GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "")
 
 Base.metadata.create_all(bind=engine)
 
-app = FastAPI(title="ReflectAI Journal API")
-
 # Security scheme for JWT
 security = HTTPBearer(auto_error=False)
 
-# Load the emotion classification model at startup
-emotion_classifier = pipeline(
-    "text-classification",
-    model="SamLowe/roberta-base-go_emotions",
-    top_k=None
-)
+# Model state - loaded asynchronously for minimal startup latency
+emotion_classifier = None
+embedding_model = None
+models_loading = False
+models_loaded = False
 
-# Load the BGE-M3 embedding model at startup
-print("Loading BAAI/bge-m3 model...")
-embedding_model = SentenceTransformer("BAAI/bge-m3")
-print("BGE-M3 model loaded successfully!")
+
+def load_models_sync():
+    """Load models synchronously (called from background thread)."""
+    global emotion_classifier, embedding_model, models_loaded
+    
+    print("Loading SamLowe/roberta-base-go_emotions model...")
+    emotion_classifier = pipeline(
+        "text-classification",
+        model="SamLowe/roberta-base-go_emotions",
+        top_k=None
+    )
+    print("Emotion classifier loaded successfully!")
+    
+    print("Loading BAAI/bge-m3 model...")
+    embedding_model = SentenceTransformer("BAAI/bge-m3")
+    print("BGE-M3 model loaded successfully!")
+    
+    models_loaded = True
+    print("All models loaded and ready!")
+
+
+async def load_models_async():
+    """Load models in background thread to not block the event loop."""
+    global models_loading
+    models_loading = True
+    
+    # Run the synchronous model loading in a thread pool
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(None, load_models_sync)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Lifespan context manager for async startup tasks."""
+    # Start loading models in the background
+    asyncio.create_task(load_models_async())
+    yield
+    # Cleanup (if needed)
+
+
+app = FastAPI(title="ReflectAI Journal API", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -152,6 +189,26 @@ def require_auth(
 
 # ============== Helper Functions ==============
 
+def require_emotion_model():
+    """Check if the emotion classifier is loaded."""
+    if emotion_classifier is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Emotion analysis model is still loading. Please try again in a moment."
+        )
+    return emotion_classifier
+
+
+def require_embedding_model():
+    """Check if the embedding model is loaded."""
+    if embedding_model is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Embedding model is still loading. Please try again in a moment."
+        )
+    return embedding_model
+
+
 def entry_to_response(entry: JournalEntry) -> JournalEntryResponse:
     """Convert a JournalEntry model to a response with computed has_embedding field."""
     return JournalEntryResponse(
@@ -239,6 +296,18 @@ def read_root():
     return {"message": "Welcome to ReflectAI Journal API"}
 
 
+@app.get("/status")
+def get_status():
+    """Get the status of the API and model loading."""
+    return {
+        "status": "ready" if models_loaded else "loading",
+        "models_loaded": models_loaded,
+        "models_loading": models_loading,
+        "emotion_model_ready": emotion_classifier is not None,
+        "embedding_model_ready": embedding_model is not None
+    }
+
+
 # ============== Protected Journal Endpoints ==============
 
 @app.post("/entries", response_model=JournalEntryResponse)
@@ -317,6 +386,8 @@ def analyze_emotion(
     db: Session = Depends(get_db)
 ):
     """Analyze emotions in a journal entry (must belong to authenticated user)."""
+    classifier = require_emotion_model()
+    
     entry = db.query(JournalEntry).filter(
         JournalEntry.id == entry_id,
         JournalEntry.user_id == current_user.id
@@ -328,7 +399,7 @@ def analyze_emotion(
     text = entry.content[:512]
     
     # Run emotion classification
-    results = emotion_classifier(text)[0]
+    results = classifier(text)[0]
     
     # Sort by score and get top emotion
     sorted_results = sorted(results, key=lambda x: x['score'], reverse=True)
@@ -358,6 +429,8 @@ def tokenize_entry(
     db: Session = Depends(get_db)
 ):
     """Tokenize a journal entry (must belong to authenticated user)."""
+    model = require_embedding_model()
+    
     entry = db.query(JournalEntry).filter(
         JournalEntry.id == entry_id,
         JournalEntry.user_id == current_user.id
@@ -365,7 +438,7 @@ def tokenize_entry(
     if entry is None:
         raise HTTPException(status_code=404, detail="Entry not found")
     
-    tokenizer = embedding_model.tokenizer
+    tokenizer = model.tokenizer
     
     # Tokenize the text
     encoded = tokenizer.encode_plus(
@@ -393,6 +466,8 @@ def embed_entry(
     db: Session = Depends(get_db)
 ):
     """Generate and store embedding for a journal entry (must belong to authenticated user)."""
+    model = require_embedding_model()
+    
     entry = db.query(JournalEntry).filter(
         JournalEntry.id == entry_id,
         JournalEntry.user_id == current_user.id
@@ -401,15 +476,15 @@ def embed_entry(
         raise HTTPException(status_code=404, detail="Entry not found")
     
     # Generate embedding using BGE-M3
-    embedding = embedding_model.encode(entry.content, normalize_embeddings=True)
+    embedding = model.encode(entry.content, normalize_embeddings=True)
     
     # Get token count
-    tokenizer = embedding_model.tokenizer
+    tokenizer = model.tokenizer
     tokens = tokenizer.encode(entry.content)
     token_count = len(tokens)
     
-    # Store embedding
-    entry.embedding = embedding.tolist()
+    # Store embedding (pgvector accepts numpy arrays directly)
+    entry.embedding = embedding
     db.commit()
     db.refresh(entry)
     
@@ -427,6 +502,8 @@ def embed_all_entries(
     db: Session = Depends(get_db)
 ):
     """Generate embeddings for all user's entries that don't have one."""
+    model = require_embedding_model()
+    
     entries = db.query(JournalEntry).filter(
         JournalEntry.user_id == current_user.id,
         JournalEntry.embedding == None
@@ -436,15 +513,15 @@ def embed_all_entries(
         return []
     
     results = []
-    tokenizer = embedding_model.tokenizer
+    tokenizer = model.tokenizer
     
     # Batch encode for efficiency
     contents = [entry.content for entry in entries]
-    embeddings = embedding_model.encode(contents, normalize_embeddings=True, show_progress_bar=True)
+    embeddings = model.encode(contents, normalize_embeddings=True, show_progress_bar=True)
     
     for entry, embedding in zip(entries, embeddings):
         tokens = tokenizer.encode(entry.content)
-        entry.embedding = embedding.tolist()
+        entry.embedding = embedding  # pgvector accepts numpy arrays directly
         
         results.append(EmbeddingResponse(
             entry_id=entry.id,
@@ -488,9 +565,20 @@ def find_similar_entries(
     # Compute similarities
     similarities = []
     query_embedding = entry.embedding
+    # Convert to list if it's a numpy array or vector type
+    if hasattr(query_embedding, 'tolist'):
+        query_embedding = query_embedding.tolist()
+    elif not isinstance(query_embedding, list):
+        query_embedding = list(query_embedding)
     
     for other in other_entries:
-        similarity = compute_cosine_similarity(query_embedding, other.embedding)
+        other_emb = other.embedding
+        # Convert to list if it's a numpy array or vector type
+        if hasattr(other_emb, 'tolist'):
+            other_emb = other_emb.tolist()
+        elif not isinstance(other_emb, list):
+            other_emb = list(other_emb)
+        similarity = compute_cosine_similarity(query_embedding, other_emb)
         similarities.append((other, similarity))
     
     # Sort by similarity (descending) and take top_k
@@ -521,8 +609,10 @@ def semantic_search(
     db: Session = Depends(get_db)
 ):
     """Search user's journal entries using semantic similarity."""
+    model = require_embedding_model()
+    
     # Generate embedding for the query text
-    query_embedding = embedding_model.encode(request.query, normalize_embeddings=True)
+    query_embedding = model.encode(request.query, normalize_embeddings=True)
     
     # Get all entries with embeddings for this user
     entries = db.query(JournalEntry).filter(
@@ -535,8 +625,15 @@ def semantic_search(
     
     # Compute similarities
     similarities = []
+    query_emb_list = query_embedding.tolist() if hasattr(query_embedding, 'tolist') else list(query_embedding)
     for entry in entries:
-        similarity = compute_cosine_similarity(query_embedding.tolist(), entry.embedding)
+        entry_emb = entry.embedding
+        # Convert to list if it's a numpy array or vector type
+        if hasattr(entry_emb, 'tolist'):
+            entry_emb = entry_emb.tolist()
+        elif not isinstance(entry_emb, list):
+            entry_emb = list(entry_emb)
+        similarity = compute_cosine_similarity(query_emb_list, entry_emb)
         similarities.append((entry, similarity))
     
     # Sort by similarity and take top_k
@@ -555,3 +652,160 @@ def semantic_search(
     ]
     
     return TextSearchResponse(query=request.query, results=results)
+
+
+# ============== Cluster Visualization Endpoints ==============
+
+@app.get("/clustering/runs", response_model=List[ClusteringRunResponse])
+def get_clustering_runs(
+    current_user: User = Depends(require_auth),
+    db: Session = Depends(get_db)
+):
+    """Get all clustering runs for the authenticated user."""
+    runs = db.query(ClusteringRun).filter(
+        ClusteringRun.user_id == current_user.id
+    ).order_by(ClusteringRun.run_timestamp.desc()).all()
+    
+    return [
+        ClusteringRunResponse(
+            id=run.id,
+            run_timestamp=run.run_timestamp,
+            num_entries=run.num_entries,
+            num_clusters=run.num_clusters,
+            min_cluster_size=run.min_cluster_size,
+            min_samples=run.min_samples,
+            membership_threshold=run.membership_threshold,
+            noise_entries=run.noise_entries
+        )
+        for run in runs
+    ]
+
+
+@app.get("/clustering/runs/{run_id}/visualization", response_model=ClusterVisualizationResponse)
+def get_cluster_visualization(
+    run_id: int,
+    current_user: User = Depends(require_auth),
+    db: Session = Depends(get_db)
+):
+    """Get cluster visualization data for a specific run."""
+    # Verify the run belongs to the user
+    run = db.query(ClusteringRun).filter(
+        ClusteringRun.id == run_id,
+        ClusteringRun.user_id == current_user.id
+    ).first()
+    
+    if run is None:
+        raise HTTPException(status_code=404, detail="Clustering run not found")
+    
+    # Get all entries with embeddings for this user, sorted by created_at
+    entries = db.query(JournalEntry).filter(
+        JournalEntry.user_id == current_user.id,
+        JournalEntry.embedding != None
+    ).order_by(JournalEntry.created_at.asc()).all()
+    
+    if not entries:
+        raise HTTPException(status_code=400, detail="No entries with embeddings found")
+    
+    # Get cluster assignments for this run
+    assignments = db.query(EntryClusterAssignment).filter(
+        EntryClusterAssignment.run_id == run_id
+    ).all()
+    
+    # Create a mapping: entry_id -> primary cluster assignment
+    entry_to_cluster = {}
+    for assignment in assignments:
+        if assignment.is_primary or assignment.entry_id not in entry_to_cluster:
+            entry_to_cluster[assignment.entry_id] = {
+                'cluster_id': assignment.cluster_id,
+                'probability': assignment.membership_probability
+            }
+    
+    # Get cluster info
+    clusters = db.query(Cluster).filter(
+        Cluster.run_id == run_id
+    ).all()
+    
+    cluster_info_map = {}
+    for cluster in clusters:
+        cluster_name = cluster.topic_label or f"Cluster {cluster.cluster_id}"
+        cluster_info_map[cluster.cluster_id] = {
+            'name': cluster_name,
+            'size': cluster.size,
+            'persistence': cluster.persistence,
+            'topic_label': cluster.topic_label
+        }
+    
+    # Filter entries that have assignments in this run
+    entries_with_assignments = [e for e in entries if e.id in entry_to_cluster]
+    
+    if not entries_with_assignments:
+        raise HTTPException(status_code=400, detail="No entries found for this clustering run")
+    
+    # Extract embeddings
+    embedding_list = []
+    for e in entries_with_assignments:
+        emb = e.embedding
+        # Convert to numpy array if needed
+        if hasattr(emb, 'tolist'):
+            embedding_list.append(emb)
+        elif isinstance(emb, list):
+            embedding_list.append(np.array(emb, dtype=np.float32))
+        else:
+            embedding_list.append(np.array(list(emb), dtype=np.float32))
+    embeddings = np.array(embedding_list)
+    
+    # Use UMAP to reduce to 2D for visualization
+    try:
+        import umap
+        reducer = umap.UMAP(
+            n_components=2,
+            n_neighbors=15,
+            min_dist=0.1,
+            metric='euclidean',
+            random_state=42
+        )
+        embedding_2d = reducer.fit_transform(embeddings)
+    except ImportError:
+        raise HTTPException(
+            status_code=503,
+            detail="UMAP not available. Install with: pip install umap-learn"
+        )
+    
+    # Build points list
+    points = []
+    for i, entry in enumerate(entries_with_assignments):
+        assignment = entry_to_cluster[entry.id]
+        cluster_id = assignment['cluster_id']
+        
+        # Handle noise points (cluster_id = -1)
+        if cluster_id == -1:
+            cluster_name = "Noise"
+        else:
+            cluster_name = cluster_info_map.get(cluster_id, {}).get('name', f"Cluster {cluster_id}")
+        
+        points.append(ClusterPoint(
+            entry_id=entry.id,
+            title=entry.title,
+            x=float(embedding_2d[i, 0]),
+            y=float(embedding_2d[i, 1]),
+            cluster_id=cluster_id,
+            cluster_name=cluster_name,
+            membership_probability=assignment['probability']
+        ))
+    
+    # Build clusters list
+    clusters_list = [
+        ClusterInfoResponse(
+            cluster_id=cluster.cluster_id,
+            size=cluster.size,
+            persistence=cluster.persistence,
+            topic_label=cluster.topic_label
+        )
+        for cluster in clusters
+    ]
+    
+    return ClusterVisualizationResponse(
+        run_id=run_id,
+        points=points,
+        clusters=clusters_list
+    )

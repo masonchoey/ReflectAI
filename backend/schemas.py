@@ -101,3 +101,44 @@ class TokenizationResponse(BaseModel):
     token_count: int
     tokens: List[str]
     token_ids: List[int]
+
+
+# Cluster schemas
+class ClusteringRunResponse(BaseModel):
+    id: int
+    run_timestamp: datetime
+    num_entries: int
+    num_clusters: int
+    min_cluster_size: int
+    min_samples: Optional[int] = None
+    membership_threshold: float
+    noise_entries: int
+
+    class Config:
+        from_attributes = True
+
+
+class ClusterInfoResponse(BaseModel):
+    cluster_id: int
+    size: int
+    persistence: Optional[float] = None
+    topic_label: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+
+
+class ClusterPoint(BaseModel):
+    entry_id: int
+    title: Optional[str] = None
+    x: float
+    y: float
+    cluster_id: int
+    cluster_name: str
+    membership_probability: float
+
+
+class ClusterVisualizationResponse(BaseModel):
+    run_id: int
+    points: List[ClusterPoint]
+    clusters: List[ClusterInfoResponse]

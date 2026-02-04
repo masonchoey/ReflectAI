@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 
 const API_URL = 'http://localhost:8000'
 const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID || ''
@@ -15,6 +15,16 @@ function App() {
   const [editContent, setEditContent] = useState('')
   const [analyzingId, setAnalyzingId] = useState(null)
   const [emotionResults, setEmotionResults] = useState({})
+  
+  // Tab state
+  const [activeTab, setActiveTab] = useState('entries')
+  
+  // Cluster visualization state
+  const [clusteringRuns, setClusteringRuns] = useState([])
+  const [selectedRunId, setSelectedRunId] = useState(null)
+  const [clusterData, setClusterData] = useState(null)
+  const [clusterLoading, setClusterLoading] = useState(false)
+  const [hoveredPoint, setHoveredPoint] = useState(null)
   
   // Auth state
   const [user, setUser] = useState(null)
@@ -152,8 +162,16 @@ function App() {
   useEffect(() => {
     if (user && token) {
       fetchEntries()
+      fetchClusteringRuns()
     }
   }, [user, token])
+  
+  // Fetch cluster visualization data when run is selected
+  useEffect(() => {
+    if (selectedRunId && user && token) {
+      fetchClusterVisualization(selectedRunId)
+    }
+  }, [selectedRunId, user, token])
 
   const fetchEntries = async () => {
     try {
@@ -175,6 +193,52 @@ function App() {
       setError('Could not load entries. Please try again.')
     } finally {
       setLoading(false)
+    }
+  }
+  
+  const fetchClusteringRuns = async () => {
+    try {
+      const response = await fetch(`${API_URL}/clustering/runs`, {
+        headers: getAuthHeaders()
+      })
+      if (!response.ok) {
+        if (response.status === 401) {
+          handleSignOut()
+          return
+        }
+        return // No runs available yet
+      }
+      const data = await response.json()
+      setClusteringRuns(data)
+      if (data.length > 0 && !selectedRunId) {
+        setSelectedRunId(data[0].id)
+      }
+    } catch (err) {
+      console.error('Could not load clustering runs:', err)
+    }
+  }
+  
+  const fetchClusterVisualization = async (runId) => {
+    try {
+      setClusterLoading(true)
+      const response = await fetch(`${API_URL}/clustering/runs/${runId}/visualization`, {
+        headers: getAuthHeaders()
+      })
+      if (!response.ok) {
+        if (response.status === 401) {
+          handleSignOut()
+          return
+        }
+        throw new Error('Failed to fetch cluster visualization')
+      }
+      const data = await response.json()
+      setClusterData(data)
+      setError(null)
+    } catch (err) {
+      setError('Could not load cluster visualization. Please try again.')
+      setClusterData(null)
+    } finally {
+      setClusterLoading(false)
     }
   }
 
@@ -430,7 +494,25 @@ function App() {
 
       {error && <div className="error">{error}</div>}
 
-      <form className="journal-form" onSubmit={handleSubmit}>
+      {/* Tabs */}
+      <div className="tabs">
+        <button
+          className={`tab ${activeTab === 'entries' ? 'active' : ''}`}
+          onClick={() => setActiveTab('entries')}
+        >
+          📔 Entries
+        </button>
+        <button
+          className={`tab ${activeTab === 'clusters' ? 'active' : ''}`}
+          onClick={() => setActiveTab('clusters')}
+        >
+          🔍 Clusters
+        </button>
+      </div>
+
+      {activeTab === 'entries' && (
+        <>
+          <form className="journal-form" onSubmit={handleSubmit}>
         <input
           type="text"
           value={title}
@@ -574,6 +656,315 @@ function App() {
           </div>
         )}
       </section>
+        </>
+      )}
+
+      {activeTab === 'clusters' && (
+        <section className="clusters-section">
+          <h2>Cluster Visualization</h2>
+          
+          {clusteringRuns.length === 0 ? (
+            <div className="empty-state">
+              <p>No clustering runs available. Run clustering on your entries first.</p>
+            </div>
+          ) : (
+            <>
+              <div className="cluster-controls">
+                <label htmlFor="run-select">Select Clustering Run:</label>
+                <select
+                  id="run-select"
+                  value={selectedRunId || ''}
+                  onChange={(e) => setSelectedRunId(parseInt(e.target.value))}
+                  className="run-select"
+                >
+                  {clusteringRuns.map((run) => (
+                    <option key={run.id} value={run.id}>
+                      {new Date(run.run_timestamp).toLocaleString()} - {run.num_clusters} clusters, {run.num_entries} entries
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              {clusterLoading ? (
+                <div className="loading">Loading cluster visualization...</div>
+              ) : clusterData ? (
+                <ClusterVisualization
+                  data={clusterData}
+                  hoveredPoint={hoveredPoint}
+                  onPointHover={setHoveredPoint}
+                />
+              ) : (
+                <div className="empty-state">
+                  <p>No visualization data available for this run.</p>
+                </div>
+              )}
+            </>
+          )}
+        </section>
+      )}
+    </div>
+  )
+}
+
+// Cluster Visualization Component
+function ClusterVisualization({ data, hoveredPoint, onPointHover }) {
+  const svgRef = useRef(null)
+  const [dimensions, setDimensions] = useState({ width: 800, height: 600 })
+  const [transform, setTransform] = useState({ x: 0, y: 0, scale: 1 })
+  const isPanningRef = useRef(false)
+  const lastPosRef = useRef({ x: 0, y: 0 })
+
+  const handleZoomIn = () => {
+    setTransform(prev => ({
+      ...prev,
+      scale: Math.min(prev.scale * 1.25, 5)
+    }))
+  }
+
+  const handleZoomOut = () => {
+    setTransform(prev => ({
+      ...prev,
+      scale: Math.max(prev.scale / 1.25, 0.4)
+    }))
+  }
+
+  const handleResetZoom = () => {
+    setTransform({ x: 0, y: 0, scale: 1 })
+  }
+
+  useEffect(() => {
+    const updateDimensions = () => {
+      if (svgRef.current) {
+        const container = svgRef.current.parentElement
+        setDimensions({
+          width: Math.min(container.clientWidth - 40, 1000),
+          height: Math.max(500, window.innerHeight * 0.6)
+        })
+      }
+    }
+    
+    updateDimensions()
+    window.addEventListener('resize', updateDimensions)
+    return () => window.removeEventListener('resize', updateDimensions)
+  }, [])
+
+  // Calculate bounds and scaling
+  const xValues = data.points.map(p => p.x)
+  const yValues = data.points.map(p => p.y)
+  const xMin = Math.min(...xValues)
+  const xMax = Math.max(...xValues)
+  const yMin = Math.min(...yValues)
+  const yMax = Math.max(...yValues)
+  
+  const xRange = xMax - xMin || 1
+  const yRange = yMax - yMin || 1
+  
+  const padding = 50
+  const scaleX = (dimensions.width - 2 * padding) / xRange
+  const scaleY = (dimensions.height - 2 * padding) / yRange
+  const scale = Math.min(scaleX, scaleY) * transform.scale
+
+  // Center embeddings within the viewport
+  const dataCenterX = (xMin + xMax) / 2
+  const dataCenterY = (yMin + yMax) / 2
+  const offsetX = dimensions.width / 2 - dataCenterX * scale + transform.x
+  const offsetY = dimensions.height / 2 - dataCenterY * scale + transform.y
+
+  // Generate colors for clusters
+  const clusterColors = {}
+  const uniqueClusters = [...new Set(data.points.map(p => p.cluster_id))].sort((a, b) => {
+    // Put noise (-1) at the end
+    if (a === -1) return 1
+    if (b === -1) return -1
+    return a - b
+  })
+  const colorPalette = [
+    '#FF6B6B', '#4ECDC4', '#45B7D1', '#FFA07A', '#98D8C8',
+    '#F7DC6F', '#BB8FCE', '#85C1E2', '#F8B739', '#52BE80',
+    '#EC7063', '#5DADE2', '#58D68D', '#F4D03F', '#AF7AC5'
+  ]
+  
+  uniqueClusters.forEach((clusterId, idx) => {
+    if (clusterId === -1) {
+      clusterColors[clusterId] = '#CCCCCC' // Gray for noise
+    } else {
+      clusterColors[clusterId] = colorPalette[idx % colorPalette.length]
+    }
+  })
+
+  const transformPoint = (x, y) => ({
+    x: x * scale + offsetX,
+    y: y * scale + offsetY
+  })
+
+  const tooltipLayout = (() => {
+    if (!hoveredPoint) return null
+    const base = transformPoint(hoveredPoint.x, hoveredPoint.y)
+    const tooltipWidth = 260
+    const tooltipHeight = 80
+    let x = base.x + 12
+    let y = base.y - tooltipHeight - 12
+
+    // Keep tooltip within bounds horizontally
+    if (x + tooltipWidth > dimensions.width - 10) {
+      x = base.x - tooltipWidth - 12
+    }
+    if (x < 10) x = 10
+
+    // And vertically
+    if (y < 10) {
+      y = base.y + 12
+    }
+
+    return { x, y, width: tooltipWidth }
+  })()
+
+  const handleMouseDown = (event) => {
+    isPanningRef.current = true
+    lastPosRef.current = { x: event.clientX, y: event.clientY }
+  }
+
+  const handleMouseMove = (event) => {
+    if (!isPanningRef.current) return
+    const deltaX = event.clientX - lastPosRef.current.x
+    const deltaY = event.clientY - lastPosRef.current.y
+    lastPosRef.current = { x: event.clientX, y: event.clientY }
+    setTransform(prev => ({
+      ...prev,
+      x: prev.x + deltaX,
+      y: prev.y + deltaY
+    }))
+  }
+
+  const endPan = () => {
+    isPanningRef.current = false
+  }
+
+  return (
+    <div className="cluster-viz-container">
+      <div className="cluster-zoom-controls">
+        <button
+          type="button"
+          className="cluster-zoom-button"
+          onClick={handleZoomOut}
+          aria-label="Zoom out"
+        >
+          −
+        </button>
+        <span className="cluster-zoom-level">
+          {Math.round(transform.scale * 100)}%
+        </span>
+        <button
+          type="button"
+          className="cluster-zoom-button"
+          onClick={handleZoomIn}
+          aria-label="Zoom in"
+        >
+          +
+        </button>
+        <button
+          type="button"
+          className="cluster-zoom-reset"
+          onClick={handleResetZoom}
+        >
+          Reset
+        </button>
+      </div>
+
+      <svg
+        ref={svgRef}
+        width={dimensions.width}
+        height={dimensions.height}
+        className="cluster-svg"
+        viewBox={`0 0 ${dimensions.width} ${dimensions.height}`}
+        onMouseDown={handleMouseDown}
+        onMouseMove={handleMouseMove}
+        onMouseUp={endPan}
+        onMouseLeave={endPan}
+      >
+        {/* Grid lines */}
+        <defs>
+          <pattern id="grid" width="20" height="20" patternUnits="userSpaceOnUse">
+            <path d="M 20 0 L 0 0 0 20" fill="none" stroke="var(--border-color)" strokeWidth="0.5" opacity="0.3"/>
+          </pattern>
+        </defs>
+        <rect width="100%" height="100%" fill="url(#grid)" />
+
+        {/* Points */}
+        {data.points.map((point) => {
+          const pos = transformPoint(point.x, point.y)
+          const isHovered = hoveredPoint?.entry_id === point.entry_id
+          const color = clusterColors[point.cluster_id] || '#CCCCCC'
+          
+          return (
+            <circle
+              key={point.entry_id}
+              cx={pos.x}
+              cy={pos.y}
+              r={isHovered ? 8 : 5}
+              fill={color}
+              stroke={isHovered ? '#fff' : 'none'}
+              strokeWidth={isHovered ? 2 : 0}
+              opacity={point.cluster_id === -1 ? 0.3 : 0.8}
+              onMouseEnter={() => onPointHover(point)}
+              onMouseLeave={() => onPointHover(null)}
+              style={{ cursor: 'pointer', transition: 'r 0.2s' }}
+            />
+          )
+        })}
+      </svg>
+
+      {hoveredPoint && tooltipLayout && (
+        <div
+          className="cluster-tooltip"
+          style={{
+            left: tooltipLayout.x,
+            top: tooltipLayout.y,
+            width: tooltipLayout.width
+          }}
+        >
+          <div className="cluster-tooltip-title">
+            {hoveredPoint.title || 'Untitled Entry'}
+          </div>
+          <div className="cluster-tooltip-body">
+            {hoveredPoint.cluster_name}
+          </div>
+        </div>
+      )}
+
+      {/* Legend */}
+      <div className="cluster-legend">
+        <h3>Clusters</h3>
+        <div className="legend-items">
+          {data.clusters.map((cluster) => {
+            const color = clusterColors[cluster.cluster_id] || '#CCCCCC'
+            const name = cluster.topic_label || `Cluster ${cluster.cluster_id}`
+            return (
+              <div key={cluster.cluster_id} className="legend-item">
+                <span
+                  className="legend-color"
+                  style={{ backgroundColor: color }}
+                />
+                <span className="legend-label">{name}</span>
+                <span className="legend-size">({cluster.size})</span>
+              </div>
+            )
+          })}
+          {/* Show noise if present */}
+          {data.points.some(p => p.cluster_id === -1) && (
+            <div className="legend-item">
+              <span
+                className="legend-color"
+                style={{ backgroundColor: '#CCCCCC' }}
+              />
+              <span className="legend-label">Noise</span>
+              <span className="legend-size">
+                ({data.points.filter(p => p.cluster_id === -1).length})
+              </span>
+            </div>
+          )}
+        </div>
+      </div>
     </div>
   )
 }
