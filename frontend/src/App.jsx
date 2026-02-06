@@ -229,12 +229,19 @@ function App() {
           handleSignOut()
           return
         }
+        // Handle cases where no visualization data exists (404 or 400) gracefully
+        if (response.status === 404 || response.status === 400) {
+          setClusterData(null)
+          setError(null)
+          return
+        }
         throw new Error('Failed to fetch cluster visualization')
       }
       const data = await response.json()
       setClusterData(data)
       setError(null)
     } catch (err) {
+      // Only show error for actual errors, not for missing data
       setError('Could not load cluster visualization. Please try again.')
       setClusterData(null)
     } finally {

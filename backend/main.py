@@ -325,6 +325,19 @@ def create_entry(
     db.add(db_entry)
     db.commit()
     db.refresh(db_entry)
+    
+    # Automatically generate embedding if model is available
+    try:
+        model = require_embedding_model()
+        embedding = model.encode(db_entry.content, normalize_embeddings=True)
+        db_entry.embedding = embedding
+        db.commit()
+        db.refresh(db_entry)
+    except HTTPException:
+        # Model not ready yet, embedding will be None
+        # This is fine - user can generate it later via /entries/{entry_id}/embed
+        pass
+    
     return entry_to_response(db_entry)
 
 
@@ -374,6 +387,17 @@ def update_entry(
     entry.title = entry_update.title
     entry.content = entry_update.content
     entry.edited_at = datetime.now(timezone.utc)
+    
+    # Automatically regenerate embedding if model is available
+    try:
+        model = require_embedding_model()
+        embedding = model.encode(entry.content, normalize_embeddings=True)
+        entry.embedding = embedding
+    except HTTPException:
+        # Model not ready yet, embedding will remain as is or be None
+        # This is fine - user can regenerate it later via /entries/{entry_id}/embed
+        pass
+    
     db.commit()
     db.refresh(entry)
     return entry_to_response(entry)
