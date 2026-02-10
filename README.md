@@ -4,15 +4,15 @@ A personal journaling application with FastAPI backend, React frontend, PostgreS
 
 ## Features
 
-- 🔐 **Google OAuth2 Authentication** - Secure sign-in with your Google account
-- ✍️ Write and save journal entries
-- ✏️ Edit previous journal entries
-- 📅 Automatic timestamps for each entry
-- 🕐 Track when entries were edited
-- 📋 View all past entries in reverse chronological order
-- 🔮 AI-powered emotion analysis
-- 🔍 Semantic search across entries
-- 🔒 Private entries - only see your own journal entries
+- **Google OAuth2 Authentication** - Secure sign-in with your Google account
+- Write and save journal entries
+- Edit previous journal entries
+- Automatic timestamps for each entry
+- Track when entries were edited
+- View all past entries in reverse chronological order
+- AI-powered emotion analysis
+- Semantic search across entries
+- Private entries - only see your own journal entries
 
 ## Tech Stack
 
@@ -140,7 +140,7 @@ docker-compose up --build
 # Stop all services
 docker-compose down
 
-# Stop and remove volumes (⚠️ deletes data)
+# Stop and remove volumes (deletes data)
 docker-compose down -v
 ```
 
