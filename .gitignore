@@ -81,3 +81,11 @@ htmlcov/
 # package-lock.json
 # yarn.lock
 # pnpm-lock.yaml
+
+# App-generated artifacts
+Journal.txt
+Journal_clean.txt
+
+# Clustering output images (HDBSCAN)
+backend/cluster_viz_*.png
+backend/condensed_tree_*.png

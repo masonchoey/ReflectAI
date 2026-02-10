@@ -13,6 +13,19 @@ from typing import List, Optional, Tuple
 from sqlalchemy.orm import Session
 from sentence_transformers import SentenceTransformer
 from tqdm import tqdm
+from env import load_root_env
+
+# Load environment variables (single consolidated root `.env`)
+load_root_env()
+
+# Configure Hugging Face cache directory
+HF_HOME = os.getenv("HF_HOME", os.path.expanduser("~/.cache/huggingface"))
+os.environ["HF_HOME"] = HF_HOME
+os.environ["TRANSFORMERS_CACHE"] = HF_HOME
+os.environ["HF_DATASETS_CACHE"] = HF_HOME
+
+# Ensure cache directory exists
+os.makedirs(HF_HOME, exist_ok=True)
 
 # Add parent dir to path for imports
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -38,8 +51,11 @@ class EmbeddingGenerator:
     def _load_model(self):
         """Lazy load the embedding model."""
         if self.model is None:
-            print(f"Loading {self.model_name} model...")
-            self.model = SentenceTransformer(self.model_name)
+            print(f"Loading {self.model_name} model with HF_HOME={HF_HOME}...")
+            self.model = SentenceTransformer(
+                self.model_name,
+                cache_folder=HF_HOME
+            )
             print("Model loaded successfully.")
     
     def generate_embedding(self, text: str, max_length: int = 8192) -> np.ndarray:

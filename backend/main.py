@@ -1,5 +1,4 @@
 import os
-import asyncio
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Depends, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
@@ -13,7 +12,7 @@ import numpy as np
 from google.oauth2 import id_token
 from google.auth.transport import requests as google_requests
 from jose import JWTError, jwt
-from dotenv import load_dotenv
+from env import load_root_env
 
 from database import engine, get_db, Base
 from models import JournalEntry, User, ClusteringRun, Cluster, EntryClusterAssignment
@@ -25,7 +24,16 @@ from schemas import (
     ClusteringRunResponse, ClusterInfoResponse, ClusterPoint, ClusterVisualizationResponse
 )
 
-load_dotenv()
+load_root_env()
+
+# Configure Hugging Face cache directory
+HF_HOME = os.getenv("HF_HOME", os.path.expanduser("~/.cache/huggingface"))
+os.environ["HF_HOME"] = HF_HOME
+os.environ["TRANSFORMERS_CACHE"] = HF_HOME
+os.environ["HF_DATASETS_CACHE"] = HF_HOME
+
+# Ensure cache directory exists
+os.makedirs(HF_HOME, exist_ok=True)
 
 # JWT Configuration
 SECRET_KEY = os.getenv("JWT_SECRET_KEY", "")
@@ -40,57 +48,58 @@ Base.metadata.create_all(bind=engine)
 # Security scheme for JWT
 security = HTTPBearer(auto_error=False)
 
-# Model state - loaded asynchronously for minimal startup latency
+# Model state - loaded lazily on first use
 emotion_classifier = None
 embedding_model = None
-models_loading = False
 models_loaded = False
 
 
-def load_models_sync():
-    """Load models synchronously (called from background thread)."""
+def load_models():
+    """Load models if they haven't been loaded yet."""
     global emotion_classifier, embedding_model, models_loaded
+
+    # If models are already loaded, do nothing
+    if models_loaded and emotion_classifier is not None and embedding_model is not None:
+        return
+    
+    print(f"Loading models with HF_HOME={HF_HOME}...")
     
     print("Loading SamLowe/roberta-base-go_emotions model...")
     emotion_classifier = pipeline(
         "text-classification",
         model="SamLowe/roberta-base-go_emotions",
-        top_k=None
+        top_k=None,
+        cache_dir=HF_HOME
     )
     print("Emotion classifier loaded successfully!")
     
     print("Loading BAAI/bge-m3 model...")
-    embedding_model = SentenceTransformer("BAAI/bge-m3")
+    embedding_model = SentenceTransformer(
+        "BAAI/bge-m3",
+        cache_folder=HF_HOME
+    )
     print("BGE-M3 model loaded successfully!")
     
     models_loaded = True
     print("All models loaded and ready!")
 
 
-async def load_models_async():
-    """Load models in background thread to not block the event loop."""
-    global models_loading
-    models_loading = True
-    
-    # Run the synchronous model loading in a thread pool
-    loop = asyncio.get_event_loop()
-    await loop.run_in_executor(None, load_models_sync)
-
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Lifespan context manager for async startup tasks."""
-    # Start loading models in the background
-    asyncio.create_task(load_models_async())
+    """Lifespan context manager for startup/shutdown tasks."""
+    # Models are now loaded lazily on first use
     yield
     # Cleanup (if needed)
 
 
 app = FastAPI(title="ReflectAI Journal API", lifespan=lifespan)
 
+# CORS configuration - allow both local development and Docker
+CORS_ORIGINS = os.getenv("CORS_ORIGINS", "http://localhost:5173,http://localhost").split(",")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],
+    allow_origins=CORS_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -190,22 +199,18 @@ def require_auth(
 # ============== Helper Functions ==============
 
 def require_emotion_model():
-    """Check if the emotion classifier is loaded."""
+    """Get the emotion classifier, loading models lazily if needed."""
+    global emotion_classifier
     if emotion_classifier is None:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Emotion analysis model is still loading. Please try again in a moment."
-        )
+        load_models()
     return emotion_classifier
 
 
 def require_embedding_model():
-    """Check if the embedding model is loaded."""
+    """Get the embedding model, loading models lazily if needed."""
+    global embedding_model
     if embedding_model is None:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Embedding model is still loading. Please try again in a moment."
-        )
+        load_models()
     return embedding_model
 
 
@@ -302,9 +307,9 @@ def get_status():
     return {
         "status": "ready" if models_loaded else "loading",
         "models_loaded": models_loaded,
-        "models_loading": models_loading,
         "emotion_model_ready": emotion_classifier is not None,
-        "embedding_model_ready": embedding_model is not None
+        "embedding_model_ready": embedding_model is not None,
+        "hf_home": HF_HOME
     }
 
 

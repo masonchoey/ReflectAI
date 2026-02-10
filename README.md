@@ -28,6 +28,7 @@ A personal journaling application with FastAPI backend, React frontend, PostgreS
 - Node.js 18+
 - PostgreSQL
 - Google Cloud Console account (for OAuth2)
+- Docker and Docker Compose (for containerized deployment)
 
 ### Google OAuth2 Setup
 
@@ -63,14 +64,17 @@ source venv/bin/activate  # On macOS/Linux
 # Install dependencies
 pip install -r requirements.txt
 
-# Create a .env file with your configuration
+# Create a single consolidated .env file in the project root
+cd ..
 cat > .env << EOF
-DATABASE_URL=postgresql://postgres:postgres@localhost:5432/reflectai
+DATABASE_URL=postgresql://postgres:postgres@localhost:5433/reflectai
 JWT_SECRET_KEY=$(python -c "import secrets; print(secrets.token_hex(32))")
 GOOGLE_CLIENT_ID=your-google-client-id.apps.googleusercontent.com
+VITE_GOOGLE_CLIENT_ID=your-google-client-id.apps.googleusercontent.com
 EOF
 
 # Run the server
+cd backend
 uvicorn main:app --reload
 ```
 
@@ -84,30 +88,84 @@ cd frontend
 # Install dependencies
 npm install
 
-# Create a .env file with your Google Client ID
-echo "VITE_GOOGLE_CLIENT_ID=your-google-client-id.apps.googleusercontent.com" > .env
-
 # Run development server
 npm run dev
 ```
 
 The frontend will be available at `http://localhost:5173`
 
+### Docker Setup (Recommended)
+
+The application is fully containerized using Docker. This setup includes:
+- **Eager model loading**: Models are loaded at startup for faster response times
+- **HF_HOME caching**: Hugging Face models are cached to a persistent volume
+- **PostgreSQL with pgvector**: Database with vector extension pre-configured
+
+#### Quick Start with Docker
+
+1. **Create a `.env` file** in the project root:
+```bash
+cat > .env << EOF
+DATABASE_URL=postgresql://postgres:postgres@postgres:5433/reflectai
+JWT_SECRET_KEY=$(python -c "import secrets; print(secrets.token_hex(32))")
+GOOGLE_CLIENT_ID=your-google-client-id.apps.googleusercontent.com
+HF_HOME=/app/.cache/huggingface
+EOF
+```
+
+2. **Build and start all services**:
+```bash
+docker-compose up --build
+```
+
+3. **Access the application**:
+   - Frontend: `http://localhost`
+   - Backend API: `http://localhost:8000`
+   - API Docs: `http://localhost:8000/docs`
+
+#### Docker Services
+
+- **postgres**: PostgreSQL database with pgvector extension
+- **backend**: FastAPI backend with eager model loading
+- **frontend**: React frontend served via nginx
+
+#### Docker Volumes
+
+- `postgres_data`: Persistent database storage
+- `huggingface_cache`: Persistent Hugging Face model cache (shared across container restarts)
+
+#### Stopping and Cleaning Up
+
+```bash
+# Stop all services
+docker-compose down
+
+# Stop and remove volumes (⚠️ deletes data)
+docker-compose down -v
+```
+
+#### Development with Docker
+
+For development, you can mount your code as volumes:
+
+```bash
+# The docker-compose.yml already mounts backend code for hot-reload
+# Frontend changes require rebuilding the image
+docker-compose up --build frontend
+```
+
 ## Environment Variables
 
-### Backend (.env)
+### Consolidated Root `.env`
 
 | Variable | Description | Required |
 |----------|-------------|----------|
 | `DATABASE_URL` | PostgreSQL connection string | Yes |
 | `JWT_SECRET_KEY` | Secret key for signing JWT tokens | Yes |
 | `GOOGLE_CLIENT_ID` | Google OAuth2 Client ID | Yes |
-
-### Frontend (.env)
-
-| Variable | Description | Required |
-|----------|-------------|----------|
-| `VITE_GOOGLE_CLIENT_ID` | Google OAuth2 Client ID (same as backend) | Yes |
+| `HF_HOME` | Hugging Face cache directory (defaults to `~/.cache/huggingface`) | No |
+| `VITE_API_URL` | Backend API URL for the frontend | No (defaults to `http://localhost:8000`) |
+| `VITE_GOOGLE_CLIENT_ID` | Google OAuth2 Client ID (for frontend) | Yes |
 
 ## API Endpoints
 

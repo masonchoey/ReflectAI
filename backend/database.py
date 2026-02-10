@@ -2,9 +2,9 @@ import os
 from sqlalchemy import create_engine, text
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
-from dotenv import load_dotenv
+from env import load_root_env
 
-load_dotenv()
+load_root_env()
 
 DATABASE_URL = os.getenv(
     "DATABASE_URL",

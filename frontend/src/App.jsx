@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 
-const API_URL = 'http://localhost:8000'
+// Prefer Vite env; fall back to localhost for local dev
+const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID || ''
 
 function App() {
@@ -15,6 +16,7 @@ function App() {
   const [editContent, setEditContent] = useState('')
   const [analyzingId, setAnalyzingId] = useState(null)
   const [emotionResults, setEmotionResults] = useState({})
+  const [expandedEmotionEntries, setExpandedEmotionEntries] = useState({})
   
   // Tab state
   const [activeTab, setActiveTab] = useState('entries')
@@ -271,10 +273,13 @@ function App() {
         throw new Error('Failed to save entry')
       }
       const newEntry = await response.json()
-      setEntries([newEntry, ...entries])
+      setEntries(prevEntries => [newEntry, ...prevEntries])
       setTitle('')
       setContent('')
       setError(null)
+
+      // Run emotion analysis automatically after saving
+      void handleAnalyzeEmotion(newEntry.id)
     } catch (err) {
       setError('Could not save entry. Please try again.')
     } finally {
@@ -329,13 +334,16 @@ function App() {
         throw new Error('Failed to update entry')
       }
       const updatedEntry = await response.json()
-      setEntries(entries.map(entry => 
+      setEntries(prevEntries => prevEntries.map(entry => 
         entry.id === entryId ? updatedEntry : entry
       ))
       setEditingId(null)
       setEditTitle('')
       setEditContent('')
       setError(null)
+
+      // Re-run emotion analysis automatically after updating
+      void handleAnalyzeEmotion(entryId)
     } catch (err) {
       setError('Could not update entry. Please try again.')
     } finally {
@@ -360,7 +368,7 @@ function App() {
       const result = await response.json()
       
       // Update the entry with the emotion data
-      setEntries(entries.map(entry => 
+      setEntries(prevEntries => prevEntries.map(entry => 
         entry.id === entryId 
           ? { ...entry, emotion: result.emotion, emotion_score: result.emotion_score }
           : entry
@@ -371,6 +379,12 @@ function App() {
         ...prev,
         [entryId]: result.all_emotions
       }))
+
+      // Automatically expand the breakdown once it's available
+      setExpandedEmotionEntries(prev => ({
+        ...prev,
+        [entryId]: true
+      }))
       
       setError(null)
     } catch (err) {
@@ -378,6 +392,13 @@ function App() {
     } finally {
       setAnalyzingId(null)
     }
+  }
+
+  const toggleEmotionBreakdown = (entryId) => {
+    setExpandedEmotionEntries(prev => ({
+      ...prev,
+      [entryId]: !prev[entryId]
+    }))
   }
 
   const getEmotionEmoji = (emotion) => {
@@ -569,11 +590,15 @@ function App() {
                     <div className="entry-actions">
                       <button 
                         className="analyze-button"
-                        onClick={() => handleAnalyzeEmotion(entry.id)}
-                        disabled={analyzingId === entry.id}
-                        aria-label="Analyze emotion"
+                        onClick={() => toggleEmotionBreakdown(entry.id)}
+                        disabled={analyzingId === entry.id || !emotionResults[entry.id]}
+                        aria-label="Toggle emotion breakdown"
                       >
-                        {analyzingId === entry.id ? '🔄 Analyzing...' : '🔮 Analyze Emotion'}
+                        {analyzingId === entry.id
+                          ? '🔄 Analyzing...'
+                          : emotionResults[entry.id]
+                            ? (expandedEmotionEntries[entry.id] ? '🙈 Hide Breakdown' : '🔍 View Breakdown')
+                            : '🔮 Preparing analysis...'}
                       </button>
                       <button 
                         className="edit-button"
@@ -634,7 +659,7 @@ function App() {
                           </span>
                         </div>
                         
-                        {emotionResults[entry.id] && (
+                        {emotionResults[entry.id] && expandedEmotionEntries[entry.id] && (
                           <div className="emotion-breakdown">
                             <span className="breakdown-label">Top emotions:</span>
                             <div className="emotion-bars">

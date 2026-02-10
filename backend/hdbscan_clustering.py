@@ -19,6 +19,19 @@ from dataclasses import dataclass
 from sqlalchemy.orm import Session
 from sqlalchemy import desc
 from tqdm import tqdm
+from env import load_root_env
+
+# Load environment variables (single consolidated root `.env`)
+load_root_env()
+
+# Configure Hugging Face cache directory
+HF_HOME = os.getenv("HF_HOME", os.path.expanduser("~/.cache/huggingface"))
+os.environ["HF_HOME"] = HF_HOME
+os.environ["TRANSFORMERS_CACHE"] = HF_HOME
+os.environ["HF_DATASETS_CACHE"] = HF_HOME
+
+# Ensure cache directory exists
+os.makedirs(HF_HOME, exist_ok=True)
 
 # Optional visualization imports
 try:
@@ -254,7 +267,8 @@ class TopicLabeler:
                 "KeyBERT not available. Install with: pip install keybert"
             )
         
-        print(f"Loading KeyBERT with model: {self.model_name}...")
+        print(f"Loading KeyBERT with model: {self.model_name} (HF_HOME={HF_HOME})...")
+        # KeyBERT uses SentenceTransformer internally, which respects HF_HOME
         self.model = KeyBERT(model=self.model_name)
         print("KeyBERT model loaded successfully.")
     
