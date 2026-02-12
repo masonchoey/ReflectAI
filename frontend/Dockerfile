@@ -39,8 +39,8 @@ RUN echo 'server { \
         try_files $uri $uri/ /index.html; \
     } \
     location /api { \
-        proxy_pass http://backend:8000; \
-        proxy_set_header Host $host; \
+        proxy_pass https://reflectai-jhwv.onrender.com/; \
+        proxy_set_header Host reflectai-jhwv.onrender.com; \
         proxy_set_header X-Real-IP $remote_addr; \
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for; \
         proxy_set_header X-Forwarded-Proto $scheme; \
