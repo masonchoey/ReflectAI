@@ -22,12 +22,13 @@ from schemas import (
     EmotionAnalysisResponse, EmotionResult, EmbeddingResponse,
     SimilarEntry, SemanticSearchResponse, TextSearchRequest, TextSearchResponse,
     TokenizationResponse, GoogleAuthRequest, AuthResponse, UserResponse,
-    ClusteringRunResponse, ClusterInfoResponse, ClusterPoint, ClusterVisualizationResponse,
+    ClusteringRunRequest, ClusteringRunResponse, ClusterInfoResponse, ClusterPoint, ClusterVisualizationResponse,
     TaskStatusResponse
 )
 from tasks import vectorize_entry, vectorize_all_entries
 from celery.result import AsyncResult
 from celery_app import celery_app
+from hdbscan_clustering import run_clustering
 
 load_root_env()
 
@@ -662,6 +663,54 @@ def semantic_search(
 
 # ============== Cluster Visualization Endpoints ==============
 
+@app.post("/clustering/run", response_model=ClusteringRunResponse)
+def create_clustering_run(
+    request: ClusteringRunRequest,
+    current_user: User = Depends(require_auth),
+    db: Session = Depends(get_db)
+):
+    """Run clustering on the authenticated user's entries with optional date filtering."""
+    try:
+        # Run clustering with the provided parameters
+        run_clustering(
+            user_id=current_user.id,
+            start_date=request.start_date,
+            end_date=request.end_date,
+            min_cluster_size=request.min_cluster_size,
+            min_samples=request.min_samples,
+            membership_threshold=request.membership_threshold
+        )
+        
+        # Get the most recent run for this user
+        latest_run = db.query(ClusteringRun).filter(
+            ClusteringRun.user_id == current_user.id
+        ).order_by(ClusteringRun.run_timestamp.desc()).first()
+        
+        if latest_run is None:
+            raise HTTPException(
+                status_code=500,
+                detail="Clustering completed but no run was found"
+            )
+        
+        return ClusteringRunResponse(
+            id=latest_run.id,
+            run_timestamp=latest_run.run_timestamp,
+            num_entries=latest_run.num_entries,
+            num_clusters=latest_run.num_clusters,
+            min_cluster_size=latest_run.min_cluster_size,
+            min_samples=latest_run.min_samples,
+            membership_threshold=latest_run.membership_threshold,
+            noise_entries=latest_run.noise_entries,
+            start_date=latest_run.start_date,
+            end_date=latest_run.end_date
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to run clustering: {str(e)}"
+        )
+
+
 @app.get("/clustering/runs", response_model=List[ClusteringRunResponse])
 def get_clustering_runs(
     current_user: User = Depends(require_auth),
@@ -681,7 +730,9 @@ def get_clustering_runs(
             min_cluster_size=run.min_cluster_size,
             min_samples=run.min_samples,
             membership_threshold=run.membership_threshold,
-            noise_entries=run.noise_entries
+            noise_entries=run.noise_entries,
+            start_date=run.start_date,
+            end_date=run.end_date
         )
         for run in runs
     ]

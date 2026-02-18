@@ -33,6 +33,10 @@ function App() {
   const [clusterData, setClusterData] = useState(null)
   const [clusterLoading, setClusterLoading] = useState(false)
   const [hoveredPoint, setHoveredPoint] = useState(null)
+  const [dateRangeType, setDateRangeType] = useState('all') // 'all', '7days', '30days', '90days', 'custom'
+  const [startDate, setStartDate] = useState('')
+  const [endDate, setEndDate] = useState('')
+  const [runningClustering, setRunningClustering] = useState(false)
   
   // Auth state
   const [user, setUser] = useState(null)
@@ -254,6 +258,70 @@ function App() {
       setClusterData(null)
     } finally {
       setClusterLoading(false)
+    }
+  }
+
+  const runClustering = async () => {
+    try {
+      setRunningClustering(true)
+      setError(null)
+      
+      // Calculate dates based on dateRangeType
+      let requestStartDate = null
+      let requestEndDate = null
+      
+      if (dateRangeType === 'custom') {
+        if (startDate) {
+          requestStartDate = new Date(startDate).toISOString()
+        }
+        if (endDate) {
+          // Set to end of day
+          const end = new Date(endDate)
+          end.setHours(23, 59, 59, 999)
+          requestEndDate = end.toISOString()
+        }
+      } else if (dateRangeType !== 'all') {
+        const days = parseInt(dateRangeType)
+        const end = new Date()
+        end.setHours(23, 59, 59, 999)
+        requestEndDate = end.toISOString()
+        
+        const start = new Date()
+        start.setDate(start.getDate() - days)
+        start.setHours(0, 0, 0, 0)
+        requestStartDate = start.toISOString()
+      }
+      
+      const requestBody = {}
+      if (requestStartDate) requestBody.start_date = requestStartDate
+      if (requestEndDate) requestBody.end_date = requestEndDate
+      
+      const response = await fetch(`${API_URL}/clustering/run`, {
+        method: 'POST',
+        headers: getAuthHeaders(),
+        body: JSON.stringify(requestBody)
+      })
+      
+      if (!response.ok) {
+        if (response.status === 401) {
+          handleSignOut()
+          return
+        }
+        const errorData = await response.json().catch(() => ({ detail: 'Failed to run clustering' }))
+        throw new Error(errorData.detail || 'Failed to run clustering')
+      }
+      
+      // Refresh clustering runs list
+      await fetchClusteringRuns()
+      
+      // Select the newly created run
+      const newRun = await response.json()
+      setSelectedRunId(newRun.id)
+      
+    } catch (err) {
+      setError(err.message || 'Could not run clustering. Please try again.')
+    } finally {
+      setRunningClustering(false)
     }
   }
 
@@ -701,6 +769,75 @@ function App() {
         <section className="clusters-section">
           <h2>Cluster Visualization</h2>
           
+          <div className="cluster-run-controls" style={{ marginBottom: '20px', padding: '15px', border: '1px solid #ddd', borderRadius: '8px', backgroundColor: '#f9f9f9' }}>
+            <h3 style={{ marginTop: 0, marginBottom: '15px' }}>Run Clustering</h3>
+            
+            <div style={{ marginBottom: '15px' }}>
+              <label htmlFor="date-range-type" style={{ display: 'block', marginBottom: '8px', fontWeight: 'bold' }}>
+                Time Period:
+              </label>
+              <select
+                id="date-range-type"
+                value={dateRangeType}
+                onChange={(e) => setDateRangeType(e.target.value)}
+                style={{ width: '100%', padding: '8px', fontSize: '14px', borderRadius: '4px', border: '1px solid #ccc' }}
+              >
+                <option value="all">All Entries</option>
+                <option value="7">Last 7 Days</option>
+                <option value="30">Last 30 Days</option>
+                <option value="90">Last 90 Days</option>
+                <option value="custom">Custom Range</option>
+              </select>
+            </div>
+            
+            {dateRangeType === 'custom' && (
+              <div style={{ marginBottom: '15px', display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
+                <div>
+                  <label htmlFor="start-date" style={{ display: 'block', marginBottom: '8px', fontWeight: 'bold' }}>
+                    Start Date:
+                  </label>
+                  <input
+                    id="start-date"
+                    type="date"
+                    value={startDate}
+                    onChange={(e) => setStartDate(e.target.value)}
+                    style={{ width: '100%', padding: '8px', fontSize: '14px', borderRadius: '4px', border: '1px solid #ccc' }}
+                  />
+                </div>
+                <div>
+                  <label htmlFor="end-date" style={{ display: 'block', marginBottom: '8px', fontWeight: 'bold' }}>
+                    End Date:
+                  </label>
+                  <input
+                    id="end-date"
+                    type="date"
+                    value={endDate}
+                    onChange={(e) => setEndDate(e.target.value)}
+                    style={{ width: '100%', padding: '8px', fontSize: '14px', borderRadius: '4px', border: '1px solid #ccc' }}
+                  />
+                </div>
+              </div>
+            )}
+            
+            <button
+              onClick={runClustering}
+              disabled={runningClustering}
+              style={{
+                width: '100%',
+                padding: '12px',
+                fontSize: '16px',
+                fontWeight: 'bold',
+                backgroundColor: runningClustering ? '#ccc' : '#007bff',
+                color: 'white',
+                border: 'none',
+                borderRadius: '4px',
+                cursor: runningClustering ? 'not-allowed' : 'pointer'
+              }}
+            >
+              {runningClustering ? 'Running Clustering...' : 'Run Clustering'}
+            </button>
+          </div>
+          
           {clusteringRuns.length === 0 ? (
             <div className="empty-state">
               <p>No clustering runs available. Run clustering on your entries first.</p>
@@ -715,11 +852,16 @@ function App() {
                   onChange={(e) => setSelectedRunId(parseInt(e.target.value))}
                   className="run-select"
                 >
-                  {clusteringRuns.map((run) => (
-                    <option key={run.id} value={run.id}>
-                      {new Date(run.run_timestamp).toLocaleString()} - {run.num_clusters} clusters, {run.num_entries} entries
-                    </option>
-                  ))}
+                  {clusteringRuns.map((run) => {
+                    const dateRangeStr = run.start_date || run.end_date
+                      ? ` (${run.start_date ? new Date(run.start_date).toLocaleDateString() : 'start'} - ${run.end_date ? new Date(run.end_date).toLocaleDateString() : 'end'})`
+                      : ''
+                    return (
+                      <option key={run.id} value={run.id}>
+                        {new Date(run.run_timestamp).toLocaleString()} - {run.num_clusters} clusters, {run.num_entries} entries{dateRangeStr}
+                      </option>
+                    )
+                  })}
                 </select>
               </div>
 

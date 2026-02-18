@@ -51,6 +51,8 @@ class ClusteringRun(Base):
     min_samples = Column(Integer, nullable=True)
     membership_threshold = Column(Float, nullable=False)
     noise_entries = Column(Integer, nullable=False)
+    start_date = Column(DateTime(timezone=True), nullable=True)
+    end_date = Column(DateTime(timezone=True), nullable=True)
 
     # Relationships
     clusters = relationship("Cluster", back_populates="run", cascade="all, delete-orphan")

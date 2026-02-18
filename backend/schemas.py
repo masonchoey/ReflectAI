@@ -104,6 +104,14 @@ class TokenizationResponse(BaseModel):
 
 
 # Cluster schemas
+class ClusteringRunRequest(BaseModel):
+    start_date: Optional[datetime] = None
+    end_date: Optional[datetime] = None
+    min_cluster_size: Optional[int] = None
+    min_samples: Optional[int] = None
+    membership_threshold: Optional[float] = None
+
+
 class ClusteringRunResponse(BaseModel):
     id: int
     run_timestamp: datetime
@@ -113,6 +121,8 @@ class ClusteringRunResponse(BaseModel):
     min_samples: Optional[int] = None
     membership_threshold: float
     noise_entries: int
+    start_date: Optional[datetime] = None
+    end_date: Optional[datetime] = None
 
     class Config:
         from_attributes = True

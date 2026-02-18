@@ -12,7 +12,7 @@ import sys
 import json
 import numpy as np
 import hdbscan
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import List, Tuple, Optional, Dict
 from dataclasses import dataclass
@@ -107,7 +107,9 @@ class ClusterMetadataDB:
         min_cluster_size: int,
         min_samples: Optional[int],
         membership_threshold: float,
-        noise_entries: int
+        noise_entries: int,
+        start_date: Optional[datetime] = None,
+        end_date: Optional[datetime] = None
     ) -> int:
         """Save a clustering run and return its ID."""
         run = ClusteringRun(
@@ -118,7 +120,9 @@ class ClusterMetadataDB:
             min_cluster_size=min_cluster_size,
             min_samples=min_samples,
             membership_threshold=membership_threshold,
-            noise_entries=noise_entries
+            noise_entries=noise_entries,
+            start_date=start_date,
+            end_date=end_date
         )
         self.session.add(run)
         self.session.commit()
@@ -604,7 +608,9 @@ class JournalClusterer:
 def load_user_entries_with_embeddings(
     user_id: int, 
     db: Session, 
-    limit: Optional[int] = None
+    limit: Optional[int] = None,
+    start_date: Optional[datetime] = None,
+    end_date: Optional[datetime] = None
 ) -> List[JournalEntry]:
     """
     Load journal entries for a user that have embeddings.
@@ -613,6 +619,8 @@ def load_user_entries_with_embeddings(
         user_id: User ID to filter by
         db: Database session
         limit: Maximum number of entries to load (default: None for all)
+        start_date: Optional start date to filter entries (inclusive)
+        end_date: Optional end date to filter entries (inclusive)
     
     Returns:
         List of JournalEntry objects with embeddings
@@ -620,7 +628,17 @@ def load_user_entries_with_embeddings(
     query = db.query(JournalEntry).filter(
         JournalEntry.user_id == user_id,
         JournalEntry.embedding.isnot(None)
-    ).order_by(JournalEntry.created_at)
+    )
+    
+    # Apply date filters if provided
+    if start_date is not None:
+        query = query.filter(JournalEntry.created_at >= start_date)
+    if end_date is not None:
+        # Add one day to end_date to make it inclusive of the entire day
+        end_date_inclusive = end_date + timedelta(days=1)
+        query = query.filter(JournalEntry.created_at < end_date_inclusive)
+    
+    query = query.order_by(JournalEntry.created_at)
     
     if limit is not None:
         query = query.limit(limit)
@@ -708,7 +726,9 @@ def run_clustering(
     metadata_db: Optional[str] = None,
     limit: Optional[int] = None,
     visualize: bool = False,
-    output_dir: str = "."
+    output_dir: str = ".",
+    start_date: Optional[datetime] = None,
+    end_date: Optional[datetime] = None
 ):
     """
     Run HDBSCAN clustering on a user's journal entries.
@@ -738,6 +758,8 @@ def run_clustering(
         limit: Maximum number of entries to load (None for all)
         visualize: Whether to generate visualization plots
         output_dir: Directory for output files
+        start_date: Optional start date to filter entries (inclusive)
+        end_date: Optional end date to filter entries (inclusive)
     """
     print(f"\n{'='*60}")
     print(f"HDBSCAN Clustering for User {user_id}")
@@ -754,7 +776,16 @@ def run_clustering(
             print(f"Warning: User ID {user_id} not found, checking entries directly...")
         
         # Load entries that have embeddings
-        entries = load_user_entries_with_embeddings(user_id, db, limit=limit)
+        entries = load_user_entries_with_embeddings(user_id, db, limit=limit, start_date=start_date, end_date=end_date)
+        
+        # Print date filter info if provided
+        if start_date or end_date:
+            date_range_str = ""
+            if start_date:
+                date_range_str += f"from {start_date.strftime('%Y-%m-%d')} "
+            if end_date:
+                date_range_str += f"to {end_date.strftime('%Y-%m-%d')}"
+            print(f"Filtering entries {date_range_str}")
         
         if not entries:
             print(f"No entries with embeddings found for user {user_id}")
@@ -924,7 +955,9 @@ def run_clustering(
             min_cluster_size=final_min_cluster_size,
             min_samples=final_min_samples,
             membership_threshold=final_membership_threshold,
-            noise_entries=n_noise
+            noise_entries=n_noise,
+            start_date=start_date,
+            end_date=end_date
         )
         print(f"Created clustering run ID: {run_id}")
         
