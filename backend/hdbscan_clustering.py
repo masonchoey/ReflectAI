@@ -720,6 +720,8 @@ def run_clustering(
     cluster_selection_method: str = 'leaf',
     use_umap: bool = True,
     umap_n_components: int = 10,
+    umap_n_neighbors: Optional[int] = None,
+    umap_min_dist: Optional[float] = None,
     umap_metric: str = 'cosine',
     generate_topics: bool = False,
     topic_model: str = "all-MiniLM-L6-v2",
@@ -764,6 +766,28 @@ def run_clustering(
     print(f"\n{'='*60}")
     print(f"HDBSCAN Clustering for User {user_id}")
     print(f"{'='*60}\n")
+    
+    # Log all parameters at the start
+    print("--- Clustering Run Parameters ---")
+    print(f"User ID: {user_id}")
+    if start_date:
+        print(f"Start date: {start_date.strftime('%Y-%m-%d %H:%M:%S')}")
+    if end_date:
+        print(f"End date: {end_date.strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"min_cluster_size: {min_cluster_size}")
+    print(f"min_samples: {min_samples}")
+    print(f"membership_threshold: {membership_threshold}")
+    print(f"cluster_selection_epsilon: {cluster_selection_epsilon}")
+    print(f"metric: {metric}")
+    print(f"cluster_selection_method: {cluster_selection_method}")
+    print(f"use_umap: {use_umap}")
+    if use_umap:
+        print(f"umap_n_components: {umap_n_components}")
+        print(f"umap_n_neighbors: {umap_n_neighbors}")
+        print(f"umap_min_dist: {umap_min_dist}")
+        print(f"umap_metric: {umap_metric}")
+    print("="*60)
+    print()
     
     # Load entries
     db = SessionLocal()
@@ -820,6 +844,9 @@ def run_clustering(
         final_min_samples = min_samples if min_samples is not None else 2
         final_membership_threshold = membership_threshold if membership_threshold is not None else 0.1
         final_cluster_selection_epsilon = cluster_selection_epsilon if cluster_selection_epsilon is not None else 0.0
+        final_umap_n_components = umap_n_components if umap_n_components is not None else 10
+        final_umap_n_neighbors = umap_n_neighbors if umap_n_neighbors is not None else 15
+        final_umap_min_dist = umap_min_dist if umap_min_dist is not None else 0.0
         final_metric = metric
         
         print(f"\n--- Using Parameters ---")
@@ -831,7 +858,9 @@ def run_clustering(
         print(f"metric: {final_metric}")
         print(f"use_umap: {use_umap}")
         if use_umap:
-            print(f"umap_n_components: {umap_n_components}")
+            print(f"umap_n_components: {final_umap_n_components}")
+            print(f"umap_n_neighbors: {final_umap_n_neighbors}")
+            print(f"umap_min_dist: {final_umap_min_dist}")
             print(f"umap_metric: {umap_metric}")
         
         # Run clustering
@@ -844,7 +873,9 @@ def run_clustering(
             metric=final_metric,
             cluster_selection_method=cluster_selection_method,
             use_umap=use_umap,
-            umap_n_components=umap_n_components,
+            umap_n_components=final_umap_n_components,
+            umap_n_neighbors=final_umap_n_neighbors,
+            umap_min_dist=final_umap_min_dist,
             umap_metric=umap_metric
         )
         

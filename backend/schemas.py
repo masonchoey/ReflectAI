@@ -110,6 +110,10 @@ class ClusteringRunRequest(BaseModel):
     min_cluster_size: Optional[int] = None
     min_samples: Optional[int] = None
     membership_threshold: Optional[float] = None
+    cluster_selection_epsilon: Optional[float] = None
+    umap_n_components: Optional[int] = None
+    umap_n_neighbors: Optional[int] = None
+    umap_min_dist: Optional[float] = None
 
 
 class ClusteringRunResponse(BaseModel):

@@ -25,10 +25,9 @@ from schemas import (
     ClusteringRunRequest, ClusteringRunResponse, ClusterInfoResponse, ClusterPoint, ClusterVisualizationResponse,
     TaskStatusResponse
 )
-from tasks import vectorize_entry, vectorize_all_entries
+from tasks import vectorize_entry, vectorize_all_entries, run_clustering_task
 from celery.result import AsyncResult
 from celery_app import celery_app
-from hdbscan_clustering import run_clustering
 
 load_root_env()
 
@@ -120,9 +119,17 @@ app = FastAPI(title="ReflectAI Journal API", lifespan=lifespan)
 
 # CORS configuration - allow both local development and production
 # Accept comma-separated list of origins from environment variable
-CORS_ORIGINS_STR = os.getenv("CORS_ORIGINS", "http://localhost:5173,http://localhost")
+CORS_ORIGINS_STR = os.getenv("CORS_ORIGINS", "http://localhost:5173,http://localhost:3000,http://localhost")
 # Split and strip whitespace from each origin
 CORS_ORIGINS = [origin.strip() for origin in CORS_ORIGINS_STR.split(",") if origin.strip()]
+
+# Add default localhost origins if not in the list
+default_origins = ["http://localhost:5173", "http://localhost:3000", "http://localhost"]
+for origin in default_origins:
+    if origin not in CORS_ORIGINS:
+        CORS_ORIGINS.append(origin)
+
+print(f"CORS allowed origins: {CORS_ORIGINS}")
 
 app.add_middleware(
     CORSMiddleware,
@@ -130,6 +137,7 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["*"],
 )
 
 
@@ -671,51 +679,45 @@ def semantic_search(
 
 # ============== Cluster Visualization Endpoints ==============
 
-@app.post("/clustering/run", response_model=ClusteringRunResponse)
+@app.post("/clustering/run", response_model=TaskStatusResponse)
 def create_clustering_run(
     request: ClusteringRunRequest,
     current_user: User = Depends(require_auth),
     db: Session = Depends(get_db)
 ):
-    """Run clustering on the authenticated user's entries with optional date filtering."""
+    """Queue clustering task for the authenticated user's entries with optional date filtering."""
     try:
-        # Run clustering with the provided parameters
-        run_clustering(
+        # Prepare date strings for the task
+        start_date_str = None
+        end_date_str = None
+        if request.start_date:
+            start_date_str = request.start_date.isoformat()
+        if request.end_date:
+            end_date_str = request.end_date.isoformat()
+        
+        # Queue the clustering task
+        task = run_clustering_task.delay(
             user_id=current_user.id,
-            start_date=request.start_date,
-            end_date=request.end_date,
+            start_date=start_date_str,
+            end_date=end_date_str,
             min_cluster_size=request.min_cluster_size,
             min_samples=request.min_samples,
-            membership_threshold=request.membership_threshold
+            membership_threshold=request.membership_threshold,
+            cluster_selection_epsilon=request.cluster_selection_epsilon,
+            umap_n_components=request.umap_n_components,
+            umap_n_neighbors=request.umap_n_neighbors,
+            umap_min_dist=request.umap_min_dist
         )
         
-        # Get the most recent run for this user
-        latest_run = db.query(ClusteringRun).filter(
-            ClusteringRun.user_id == current_user.id
-        ).order_by(ClusteringRun.run_timestamp.desc()).first()
-        
-        if latest_run is None:
-            raise HTTPException(
-                status_code=500,
-                detail="Clustering completed but no run was found"
-            )
-        
-        return ClusteringRunResponse(
-            id=latest_run.id,
-            run_timestamp=latest_run.run_timestamp,
-            num_entries=latest_run.num_entries,
-            num_clusters=latest_run.num_clusters,
-            min_cluster_size=latest_run.min_cluster_size,
-            min_samples=latest_run.min_samples,
-            membership_threshold=latest_run.membership_threshold,
-            noise_entries=latest_run.noise_entries,
-            start_date=latest_run.start_date,
-            end_date=latest_run.end_date
+        return TaskStatusResponse(
+            task_id=task.id,
+            status=task.state,
+            result=None
         )
     except Exception as e:
         raise HTTPException(
             status_code=500,
-            detail=f"Failed to run clustering: {str(e)}"
+            detail=f"Failed to queue clustering task: {str(e)}"
         )
 
 

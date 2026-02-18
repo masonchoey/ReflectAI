@@ -37,6 +37,17 @@ function App() {
   const [startDate, setStartDate] = useState('')
   const [endDate, setEndDate] = useState('')
   const [runningClustering, setRunningClustering] = useState(false)
+  const [clusteringTaskId, setClusteringTaskId] = useState(null)
+  const [clusteringTaskStatus, setClusteringTaskStatus] = useState(null)
+  
+  // Clustering parameters
+  const [minClusterSize, setMinClusterSize] = useState(5)
+  const [minSamples, setMinSamples] = useState(2)
+  const [membershipThreshold, setMembershipThreshold] = useState(0.1)
+  const [clusterSelectionEpsilon, setClusterSelectionEpsilon] = useState(0.0)
+  const [umapNComponents, setUmapNComponents] = useState(10)
+  const [umapNNeighbors, setUmapNNeighbors] = useState(15)
+  const [umapMinDist, setUmapMinDist] = useState(0.0)
   
   // Auth state
   const [user, setUser] = useState(null)
@@ -265,6 +276,7 @@ function App() {
     try {
       setRunningClustering(true)
       setError(null)
+      setClusteringTaskStatus(null)
       
       // Calculate dates based on dateRangeType
       let requestStartDate = null
@@ -292,7 +304,11 @@ function App() {
         requestStartDate = start.toISOString()
       }
       
-      const requestBody = {}
+      const requestBody = {
+        min_cluster_size: minClusterSize,
+        min_samples: minSamples,
+        membership_threshold: membershipThreshold
+      }
       if (requestStartDate) requestBody.start_date = requestStartDate
       if (requestEndDate) requestBody.end_date = requestEndDate
       
@@ -307,23 +323,73 @@ function App() {
           handleSignOut()
           return
         }
-        const errorData = await response.json().catch(() => ({ detail: 'Failed to run clustering' }))
-        throw new Error(errorData.detail || 'Failed to run clustering')
+        const errorData = await response.json().catch(() => ({ detail: 'Failed to queue clustering task' }))
+        throw new Error(errorData.detail || 'Failed to queue clustering task')
       }
       
-      // Refresh clustering runs list
-      await fetchClusteringRuns()
-      
-      // Select the newly created run
-      const newRun = await response.json()
-      setSelectedRunId(newRun.id)
+      const taskData = await response.json()
+      setClusteringTaskId(taskData.task_id)
+      setClusteringTaskStatus(taskData.status)
       
     } catch (err) {
       setError(err.message || 'Could not run clustering. Please try again.')
-    } finally {
       setRunningClustering(false)
+      setClusteringTaskId(null)
+      setClusteringTaskStatus(null)
     }
   }
+
+  // Poll for clustering task status
+  useEffect(() => {
+    if (!clusteringTaskId) return
+
+    const pollTaskStatus = async () => {
+      try {
+        const response = await fetch(`${API_URL}/tasks/${clusteringTaskId}`, {
+          headers: getAuthHeaders()
+        })
+        
+        if (!response.ok) {
+          if (response.status === 401) {
+            handleSignOut()
+            return
+          }
+          return
+        }
+        
+        const taskData = await response.json()
+        setClusteringTaskStatus(taskData.status)
+        
+        if (taskData.status === 'SUCCESS') {
+          // Task completed successfully
+          setRunningClustering(false)
+          setClusteringTaskId(null)
+          
+          // Refresh clustering runs list
+          await fetchClusteringRuns()
+          
+          // If the task result contains a run_id, select it
+          if (taskData.result && taskData.result.run_id) {
+            setSelectedRunId(taskData.result.run_id)
+          }
+        } else if (taskData.status === 'FAILURE' || taskData.status === 'REVOKED') {
+          // Task failed
+          setRunningClustering(false)
+          setClusteringTaskId(null)
+          setError(taskData.error || 'Clustering task failed. Please try again.')
+        }
+        // If task is still PENDING or STARTED, continue polling
+      } catch (err) {
+        console.error('Error polling task status:', err)
+      }
+    }
+
+    // Poll immediately, then every 2 seconds
+    pollTaskStatus()
+    const interval = setInterval(pollTaskStatus, 2000)
+
+    return () => clearInterval(interval)
+  }, [clusteringTaskId, token, getAuthHeaders, fetchClusteringRuns, handleSignOut])
 
   const handleSubmit = async (e) => {
     e.preventDefault()
@@ -769,18 +835,17 @@ function App() {
         <section className="clusters-section">
           <h2>Cluster Visualization</h2>
           
-          <div className="cluster-run-controls" style={{ marginBottom: '20px', padding: '15px', border: '1px solid #ddd', borderRadius: '8px', backgroundColor: '#f9f9f9' }}>
-            <h3 style={{ marginTop: 0, marginBottom: '15px' }}>Run Clustering</h3>
+          {clusteringRuns.length === 0 ? (
+            <div className="cluster-layout-container">
+          <div className="cluster-run-controls">
+            <h3>Run Clustering</h3>
             
-            <div style={{ marginBottom: '15px' }}>
-              <label htmlFor="date-range-type" style={{ display: 'block', marginBottom: '8px', fontWeight: 'bold' }}>
-                Time Period:
-              </label>
+            <div className="form-group">
+              <label htmlFor="date-range-type">Time Period:</label>
               <select
                 id="date-range-type"
                 value={dateRangeType}
                 onChange={(e) => setDateRangeType(e.target.value)}
-                style={{ width: '100%', padding: '8px', fontSize: '14px', borderRadius: '4px', border: '1px solid #ccc' }}
               >
                 <option value="all">All Entries</option>
                 <option value="7">Last 7 Days</option>
@@ -791,59 +856,452 @@ function App() {
             </div>
             
             {dateRangeType === 'custom' && (
-              <div style={{ marginBottom: '15px', display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
-                <div>
-                  <label htmlFor="start-date" style={{ display: 'block', marginBottom: '8px', fontWeight: 'bold' }}>
-                    Start Date:
-                  </label>
+              <div className="custom-date-range">
+                <div className="form-group">
+                  <label htmlFor="start-date">Start Date:</label>
                   <input
                     id="start-date"
                     type="date"
                     value={startDate}
                     onChange={(e) => setStartDate(e.target.value)}
-                    style={{ width: '100%', padding: '8px', fontSize: '14px', borderRadius: '4px', border: '1px solid #ccc' }}
                   />
                 </div>
-                <div>
-                  <label htmlFor="end-date" style={{ display: 'block', marginBottom: '8px', fontWeight: 'bold' }}>
-                    End Date:
-                  </label>
+                <div className="form-group">
+                  <label htmlFor="end-date">End Date:</label>
                   <input
                     id="end-date"
                     type="date"
                     value={endDate}
                     onChange={(e) => setEndDate(e.target.value)}
-                    style={{ width: '100%', padding: '8px', fontSize: '14px', borderRadius: '4px', border: '1px solid #ccc' }}
                   />
                 </div>
               </div>
             )}
+                
+                <div className="clustering-parameters">
+                  <h4>Clustering Parameters</h4>
+                  <p className="parameters-description">
+                    Adjust these parameters to fine-tune clustering results. HDBSCAN parameters control cluster formation, while UMAP parameters control dimensionality reduction before clustering.
+                  </p>
+                  
+                  <div className="parameter-group">
+                    <label htmlFor="min-cluster-size">
+                      Min Cluster Size: <strong>{minClusterSize}</strong>
+                    </label>
+                    <div className="parameter-info">
+                      Minimum number of entries required to form a cluster. Lower values (2-4) create more fine-grained clusters. Higher values (8-15) create fewer, larger clusters.
+                    </div>
+                    <input
+                      id="min-cluster-size"
+                      type="range"
+                      min="2"
+                      max="20"
+                      value={minClusterSize}
+                      onChange={(e) => setMinClusterSize(parseInt(e.target.value))}
+                      className="parameter-slider"
+                    />
+                    <div className="slider-labels">
+                      <span>2 (More clusters)</span>
+                      <span>20 (Fewer clusters)</span>
+                    </div>
+                  </div>
+                  
+                  <div className="parameter-group">
+                    <label htmlFor="min-samples">
+                      Min Samples: <strong>{minSamples}</strong>
+                    </label>
+                    <div className="parameter-info">
+                      Minimum number of neighbors required for a point to be considered a core point. Lower values (1-2) allow more points to be clustered. Higher values (4-6) create stricter clustering.
+                    </div>
+                    <input
+                      id="min-samples"
+                      type="range"
+                      min="1"
+                      max="10"
+                      value={minSamples}
+                      onChange={(e) => setMinSamples(parseInt(e.target.value))}
+                      className="parameter-slider"
+                    />
+                    <div className="slider-labels">
+                      <span>1 (More points clustered)</span>
+                      <span>10 (Stricter clustering)</span>
+                    </div>
+                  </div>
+                  
+                  <div className="parameter-group">
+                    <label htmlFor="membership-threshold">
+                      Membership Threshold: <strong>{membershipThreshold.toFixed(2)}</strong>
+                    </label>
+                    <div className="parameter-info">
+                      Minimum probability (0.05-0.5) for an entry to be assigned to a cluster. Lower values allow entries to belong to multiple clusters. Higher values create more exclusive cluster assignments.
+                    </div>
+                    <input
+                      id="membership-threshold"
+                      type="range"
+                      min="0.05"
+                      max="0.5"
+                      step="0.05"
+                      value={membershipThreshold}
+                      onChange={(e) => setMembershipThreshold(parseFloat(e.target.value))}
+                      className="parameter-slider"
+                    />
+                    <div className="slider-labels">
+                      <span>0.05 (Multi-cluster)</span>
+                      <span>0.5 (Exclusive)</span>
+                    </div>
+                  </div>
+                  
+                  <div className="parameter-group">
+                    <label htmlFor="cluster-selection-epsilon">
+                      Cluster Selection Epsilon: <strong>{clusterSelectionEpsilon.toFixed(2)}</strong>
+                    </label>
+                    <div className="parameter-info">
+                      Distance threshold for cluster merging. Use 0.0 to disable automatic cluster merging (recommended for fine-grained clusters). Higher values merge nearby clusters.
+                    </div>
+                    <input
+                      id="cluster-selection-epsilon"
+                      type="range"
+                      min="0.0"
+                      max="1.0"
+                      step="0.1"
+                      value={clusterSelectionEpsilon}
+                      onChange={(e) => setClusterSelectionEpsilon(parseFloat(e.target.value))}
+                      className="parameter-slider"
+                    />
+                    <div className="slider-labels">
+                      <span>0.0 (No merging)</span>
+                      <span>1.0 (More merging)</span>
+                    </div>
+                  </div>
+                  
+                  <div className="parameter-group">
+                    <label htmlFor="umap-n-components">
+                      UMAP Components: <strong>{umapNComponents}</strong>
+                    </label>
+                    <div className="parameter-info">
+                      Number of dimensions to reduce embeddings to before clustering. Lower values (5-10) preserve more local structure. Higher values (15-30) preserve more global structure. Recommended: 10.
+                    </div>
+                    <input
+                      id="umap-n-components"
+                      type="range"
+                      min="5"
+                      max="30"
+                      value={umapNComponents}
+                      onChange={(e) => setUmapNComponents(parseInt(e.target.value))}
+                      className="parameter-slider"
+                    />
+                    <div className="slider-labels">
+                      <span>5 (Local structure)</span>
+                      <span>30 (Global structure)</span>
+                    </div>
+                  </div>
+                  
+                  <div className="parameter-group">
+                    <label htmlFor="umap-n-neighbors">
+                      UMAP Neighbors: <strong>{umapNNeighbors}</strong>
+                    </label>
+                    <div className="parameter-info">
+                      Number of neighbors to consider for UMAP dimensionality reduction. Lower values (5-10) focus on local structure. Higher values (20-50) focus on global structure. Recommended: 15.
+                    </div>
+                    <input
+                      id="umap-n-neighbors"
+                      type="range"
+                      min="5"
+                      max="50"
+                      value={umapNNeighbors}
+                      onChange={(e) => setUmapNNeighbors(parseInt(e.target.value))}
+                      className="parameter-slider"
+                    />
+                    <div className="slider-labels">
+                      <span>5 (Local focus)</span>
+                      <span>50 (Global focus)</span>
+                    </div>
+                  </div>
+                  
+                  <div className="parameter-group">
+                    <label htmlFor="umap-min-dist">
+                      UMAP Min Distance: <strong>{umapMinDist.toFixed(2)}</strong>
+                    </label>
+                    <div className="parameter-info">
+                      Minimum distance between points in the reduced space. Lower values (0.0-0.1) allow tighter clusters. Higher values (0.3-1.0) spread points apart. Recommended: 0.0 for tight clusters.
+                    </div>
+                    <input
+                      id="umap-min-dist"
+                      type="range"
+                      min="0.0"
+                      max="1.0"
+                      step="0.1"
+                      value={umapMinDist}
+                      onChange={(e) => setUmapMinDist(parseFloat(e.target.value))}
+                      className="parameter-slider"
+                    />
+                    <div className="slider-labels">
+                      <span>0.0 (Tight clusters)</span>
+                      <span>1.0 (Spread apart)</span>
+                    </div>
+                  </div>
+                </div>
             
             <button
               onClick={runClustering}
               disabled={runningClustering}
-              style={{
-                width: '100%',
-                padding: '12px',
-                fontSize: '16px',
-                fontWeight: 'bold',
-                backgroundColor: runningClustering ? '#ccc' : '#007bff',
-                color: 'white',
-                border: 'none',
-                borderRadius: '4px',
-                cursor: runningClustering ? 'not-allowed' : 'pointer'
-              }}
+              className="cluster-run-button"
             >
-              {runningClustering ? 'Running Clustering...' : 'Run Clustering'}
+              {runningClustering ? (
+                clusteringTaskStatus === 'PENDING' ? 'Queuing Task...' :
+                clusteringTaskStatus === 'STARTED' ? 'Running Clustering...' :
+                'Processing...'
+              ) : 'Run Clustering'}
             </button>
+            
+            {runningClustering && clusteringTaskStatus && (
+              <div className="task-status-message">
+                <p>
+                  {clusteringTaskStatus === 'PENDING' && '⏳ Task queued, waiting to start...'}
+                  {clusteringTaskStatus === 'STARTED' && '🔄 Clustering in progress. This may take a few minutes...'}
+                  {clusteringTaskStatus === 'SUCCESS' && '✅ Clustering completed successfully!'}
+                  {clusteringTaskStatus === 'FAILURE' && '❌ Clustering failed. Please try again.'}
+                </p>
+              </div>
+            )}
           </div>
           
-          {clusteringRuns.length === 0 ? (
             <div className="empty-state">
               <p>No clustering runs available. Run clustering on your entries first.</p>
+              </div>
             </div>
           ) : (
-            <>
+            <div className="cluster-layout-container">
+              <div className="cluster-run-controls">
+                <h3>Run Clustering</h3>
+                
+                <div className="form-group">
+                  <label htmlFor="date-range-type">Time Period:</label>
+                  <select
+                    id="date-range-type"
+                    value={dateRangeType}
+                    onChange={(e) => setDateRangeType(e.target.value)}
+                  >
+                    <option value="all">All Entries</option>
+                    <option value="7">Last 7 Days</option>
+                    <option value="30">Last 30 Days</option>
+                    <option value="90">Last 90 Days</option>
+                    <option value="custom">Custom Range</option>
+                  </select>
+                </div>
+                
+                {dateRangeType === 'custom' && (
+                  <div className="custom-date-range">
+                    <div className="form-group">
+                      <label htmlFor="start-date">Start Date:</label>
+                      <input
+                        id="start-date"
+                        type="date"
+                        value={startDate}
+                        onChange={(e) => setStartDate(e.target.value)}
+                      />
+                    </div>
+                    <div className="form-group">
+                      <label htmlFor="end-date">End Date:</label>
+                      <input
+                        id="end-date"
+                        type="date"
+                        value={endDate}
+                        onChange={(e) => setEndDate(e.target.value)}
+                      />
+                    </div>
+                  </div>
+                )}
+                
+                <div className="clustering-parameters">
+                  <h4>Clustering Parameters</h4>
+                  <p className="parameters-description">
+                    Adjust these parameters to fine-tune clustering results. HDBSCAN parameters control cluster formation, while UMAP parameters control dimensionality reduction before clustering.
+                  </p>
+                  
+                  <div className="parameter-group">
+                    <label htmlFor="min-cluster-size-2">
+                      Min Cluster Size: <strong>{minClusterSize}</strong>
+                    </label>
+                    <div className="parameter-info">
+                      Minimum number of entries required to form a cluster. Lower values (2-4) create more fine-grained clusters. Higher values (8-15) create fewer, larger clusters.
+                    </div>
+                    <input
+                      id="min-cluster-size-2"
+                      type="range"
+                      min="2"
+                      max="20"
+                      value={minClusterSize}
+                      onChange={(e) => setMinClusterSize(parseInt(e.target.value))}
+                      className="parameter-slider"
+                    />
+                    <div className="slider-labels">
+                      <span>2 (More clusters)</span>
+                      <span>20 (Fewer clusters)</span>
+                    </div>
+                  </div>
+                  
+                  <div className="parameter-group">
+                    <label htmlFor="min-samples-2">
+                      Min Samples: <strong>{minSamples}</strong>
+                    </label>
+                    <div className="parameter-info">
+                      Minimum number of neighbors required for a point to be considered a core point. Lower values (1-2) allow more points to be clustered. Higher values (4-6) create stricter clustering.
+                    </div>
+                    <input
+                      id="min-samples-2"
+                      type="range"
+                      min="1"
+                      max="10"
+                      value={minSamples}
+                      onChange={(e) => setMinSamples(parseInt(e.target.value))}
+                      className="parameter-slider"
+                    />
+                    <div className="slider-labels">
+                      <span>1 (More points clustered)</span>
+                      <span>10 (Stricter clustering)</span>
+                    </div>
+                  </div>
+                  
+                  <div className="parameter-group">
+                    <label htmlFor="membership-threshold-2">
+                      Membership Threshold: <strong>{membershipThreshold.toFixed(2)}</strong>
+                    </label>
+                    <div className="parameter-info">
+                      Minimum probability (0.05-0.5) for an entry to be assigned to a cluster. Lower values allow entries to belong to multiple clusters. Higher values create more exclusive cluster assignments.
+                    </div>
+                    <input
+                      id="membership-threshold-2"
+                      type="range"
+                      min="0.05"
+                      max="0.5"
+                      step="0.05"
+                      value={membershipThreshold}
+                      onChange={(e) => setMembershipThreshold(parseFloat(e.target.value))}
+                      className="parameter-slider"
+                    />
+                    <div className="slider-labels">
+                      <span>0.05 (Multi-cluster)</span>
+                      <span>0.5 (Exclusive)</span>
+                    </div>
+                  </div>
+                  
+                  <div className="parameter-group">
+                    <label htmlFor="cluster-selection-epsilon-2">
+                      Cluster Selection Epsilon: <strong>{clusterSelectionEpsilon.toFixed(2)}</strong>
+                    </label>
+                    <div className="parameter-info">
+                      Distance threshold for cluster merging. Use 0.0 to disable automatic cluster merging (recommended for fine-grained clusters). Higher values merge nearby clusters.
+                    </div>
+                    <input
+                      id="cluster-selection-epsilon-2"
+                      type="range"
+                      min="0.0"
+                      max="1.0"
+                      step="0.1"
+                      value={clusterSelectionEpsilon}
+                      onChange={(e) => setClusterSelectionEpsilon(parseFloat(e.target.value))}
+                      className="parameter-slider"
+                    />
+                    <div className="slider-labels">
+                      <span>0.0 (No merging)</span>
+                      <span>1.0 (More merging)</span>
+                    </div>
+                  </div>
+                  
+                  <div className="parameter-group">
+                    <label htmlFor="umap-n-components-2">
+                      UMAP Components: <strong>{umapNComponents}</strong>
+                    </label>
+                    <div className="parameter-info">
+                      Number of dimensions to reduce embeddings to before clustering. Lower values (5-10) preserve more local structure. Higher values (15-30) preserve more global structure. Recommended: 10.
+                    </div>
+                    <input
+                      id="umap-n-components-2"
+                      type="range"
+                      min="5"
+                      max="30"
+                      value={umapNComponents}
+                      onChange={(e) => setUmapNComponents(parseInt(e.target.value))}
+                      className="parameter-slider"
+                    />
+                    <div className="slider-labels">
+                      <span>5 (Local structure)</span>
+                      <span>30 (Global structure)</span>
+                    </div>
+                  </div>
+                  
+                  <div className="parameter-group">
+                    <label htmlFor="umap-n-neighbors-2">
+                      UMAP Neighbors: <strong>{umapNNeighbors}</strong>
+                    </label>
+                    <div className="parameter-info">
+                      Number of neighbors to consider for UMAP dimensionality reduction. Lower values (5-10) focus on local structure. Higher values (20-50) focus on global structure. Recommended: 15.
+                    </div>
+                    <input
+                      id="umap-n-neighbors-2"
+                      type="range"
+                      min="5"
+                      max="50"
+                      value={umapNNeighbors}
+                      onChange={(e) => setUmapNNeighbors(parseInt(e.target.value))}
+                      className="parameter-slider"
+                    />
+                    <div className="slider-labels">
+                      <span>5 (Local focus)</span>
+                      <span>50 (Global focus)</span>
+                    </div>
+                  </div>
+                  
+                  <div className="parameter-group">
+                    <label htmlFor="umap-min-dist-2">
+                      UMAP Min Distance: <strong>{umapMinDist.toFixed(2)}</strong>
+                    </label>
+                    <div className="parameter-info">
+                      Minimum distance between points in the reduced space. Lower values (0.0-0.1) allow tighter clusters. Higher values (0.3-1.0) spread points apart. Recommended: 0.0 for tight clusters.
+                    </div>
+                    <input
+                      id="umap-min-dist-2"
+                      type="range"
+                      min="0.0"
+                      max="1.0"
+                      step="0.1"
+                      value={umapMinDist}
+                      onChange={(e) => setUmapMinDist(parseFloat(e.target.value))}
+                      className="parameter-slider"
+                    />
+                    <div className="slider-labels">
+                      <span>0.0 (Tight clusters)</span>
+                      <span>1.0 (Spread apart)</span>
+                    </div>
+                  </div>
+                </div>
+                
+                <button
+                  onClick={runClustering}
+                  disabled={runningClustering}
+                  className="cluster-run-button"
+                >
+                  {runningClustering ? (
+                    clusteringTaskStatus === 'PENDING' ? 'Queuing Task...' :
+                    clusteringTaskStatus === 'STARTED' ? 'Running Clustering...' :
+                    'Processing...'
+                  ) : 'Run Clustering'}
+                </button>
+                
+                {runningClustering && clusteringTaskStatus && (
+                  <div className="task-status-message">
+                    <p>
+                      {clusteringTaskStatus === 'PENDING' && '⏳ Task queued, waiting to start...'}
+                      {clusteringTaskStatus === 'STARTED' && '🔄 Clustering in progress. This may take a few minutes...'}
+                      {clusteringTaskStatus === 'SUCCESS' && '✅ Clustering completed successfully!'}
+                      {clusteringTaskStatus === 'FAILURE' && '❌ Clustering failed. Please try again.'}
+                    </p>
+                  </div>
+                )}
+              </div>
+              
+              <div className="cluster-visualization-section">
               <div className="cluster-controls">
                 <label htmlFor="run-select">Select Clustering Run:</label>
                 <select
@@ -878,7 +1336,8 @@ function App() {
                   <p>No visualization data available for this run.</p>
                 </div>
               )}
-            </>
+              </div>
+            </div>
           )}
         </section>
       )}

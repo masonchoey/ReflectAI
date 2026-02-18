@@ -27,7 +27,6 @@ body {
 }
 
 .app {
-  max-width: 800px;
   margin: 0 auto;
   padding: 3rem 1.5rem;
 }
@@ -191,6 +190,9 @@ header p {
   border-radius: 12px;
   padding: 1.5rem;
   margin-bottom: 2.5rem;
+  max-width: 800px;
+  margin-left: auto;
+  margin-right: auto;
 }
 
 .journal-form .title-input {
@@ -267,6 +269,11 @@ header p {
 .journal-form button:disabled {
   opacity: 0.6;
   cursor: not-allowed;
+}
+
+.entries-section {
+  max-width: 800px;
+  margin: 0 auto;
 }
 
 .entries-section h2 {
@@ -653,6 +660,8 @@ header p {
 /* Cluster Visualization */
 .clusters-section {
   margin-top: 2rem;
+  width: 100%;
+  max-width: none;
 }
 
 .cluster-controls {
@@ -818,4 +827,305 @@ header p {
 .legend-size {
   font-size: 0.75rem;
   color: var(--text-secondary);
+}
+
+/* Cluster Layout Container */
+.cluster-layout-container {
+  display: flex;
+  flex-direction: column;
+  gap: 2rem;
+}
+
+.cluster-visualization-section {
+  flex: 1;
+  min-width: 0; /* Allows flex item to shrink below content size */
+}
+
+/* Responsive: side-by-side on larger screens */
+@media (min-width: 1024px) {
+  .cluster-layout-container {
+    flex-direction: row;
+    align-items: flex-start;
+  }
+  
+  .cluster-run-controls {
+    flex: 0 0 400px; /* Fixed width, don't grow or shrink */
+    margin-bottom: 0;
+    top: 1rem;
+    max-height: calc(100vh - 2rem);
+    overflow-y: auto;
+  }
+  
+  .cluster-visualization-section {
+    flex: 1;
+    min-width: 0;
+  }
+}
+
+/* Cluster Run Controls */
+.cluster-run-controls {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: 12px;
+  padding: 1.5rem;
+  margin-bottom: 2rem;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+}
+
+.cluster-run-controls h3 {
+  font-family: 'DM Sans', sans-serif;
+  font-size: 1.25rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin: 0 0 1.25rem 0;
+  padding-bottom: 0.75rem;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.cluster-run-controls .form-group {
+  margin-bottom: 1.25rem;
+}
+
+.cluster-run-controls label {
+  display: block;
+  font-family: 'DM Sans', sans-serif;
+  font-size: 0.9rem;
+  font-weight: 500;
+  color: var(--text-primary);
+  margin-bottom: 0.5rem;
+}
+
+.cluster-run-controls select,
+.cluster-run-controls input[type="date"] {
+  width: 100%;
+  padding: 0.75rem 1rem;
+  font-family: 'DM Sans', sans-serif;
+  font-size: 0.95rem;
+  background: var(--bg-primary);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  color: var(--text-primary);
+  cursor: pointer;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+
+.cluster-run-controls select:focus,
+.cluster-run-controls input[type="date"]:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-glow);
+}
+
+.cluster-run-controls select option {
+  background: var(--bg-primary);
+  color: var(--text-primary);
+}
+
+.cluster-run-controls input[type="date"]::-webkit-calendar-picker-indicator {
+  filter: invert(0.8);
+  cursor: pointer;
+}
+
+.cluster-run-controls input[type="date"]::-webkit-calendar-picker-indicator:hover {
+  filter: invert(1);
+}
+
+.cluster-run-controls .custom-date-range {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1rem;
+  margin-top: 0.5rem;
+}
+
+.cluster-run-controls .custom-date-range .form-group {
+  margin-bottom: 0;
+}
+
+.cluster-run-button {
+  width: 100%;
+  padding: 0.875rem 1.5rem;
+  font-family: 'DM Sans', sans-serif;
+  font-size: 1rem;
+  font-weight: 600;
+  background: linear-gradient(135deg, var(--accent) 0%, var(--accent-dim) 100%);
+  color: #0d1117;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: transform 0.15s, box-shadow 0.15s;
+  margin-top: 0.5rem;
+}
+
+.cluster-run-button:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 20px var(--accent-glow);
+}
+
+.cluster-run-button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+  transform: none;
+}
+
+.clusters-section h2 {
+  font-family: 'DM Sans', sans-serif;
+  font-size: 1.5rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 1.5rem;
+}
+
+.task-status-message {
+  margin-top: 1rem;
+  padding: 0.75rem 1rem;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  text-align: center;
+}
+
+.task-status-message p {
+  margin: 0;
+  font-size: 0.9rem;
+  color: var(--text-secondary);
+  font-family: 'DM Sans', sans-serif;
+}
+
+/* Clustering Parameters */
+.clustering-parameters {
+  margin-top: 1.5rem;
+  padding-top: 1.5rem;
+  border-top: 1px solid var(--border-color);
+}
+
+.clustering-parameters h4 {
+  font-family: 'DM Sans', sans-serif;
+  font-size: 1.1rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin: 0 0 0.5rem 0;
+}
+
+.parameters-description {
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+  margin: 0 0 1.25rem 0;
+  line-height: 1.5;
+}
+
+.parameter-group {
+  margin-bottom: 1.5rem;
+}
+
+.parameter-group label {
+  display: block;
+  font-family: 'DM Sans', sans-serif;
+  font-size: 0.9rem;
+  font-weight: 500;
+  color: var(--text-primary);
+  margin-bottom: 0.5rem;
+}
+
+.parameter-group label strong {
+  color: var(--accent);
+  font-weight: 600;
+  margin-left: 0.25rem;
+}
+
+.parameter-info {
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+  margin-bottom: 0.75rem;
+  line-height: 1.4;
+  padding: 0.5rem;
+  background: var(--bg-tertiary);
+  border-radius: 6px;
+  border-left: 3px solid var(--accent);
+}
+
+.parameter-slider {
+  width: 100%;
+  height: 8px;
+  border-radius: 4px;
+  background: var(--bg-tertiary);
+  outline: none;
+  -webkit-appearance: none;
+  appearance: none;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+.parameter-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: var(--accent);
+  cursor: pointer;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.2);
+  transition: transform 0.15s, box-shadow 0.15s;
+  margin-top: -6px; /* Center the thumb vertically on the track (track height 8px, thumb height 20px, so (20-8)/2 = 6px) */
+}
+
+.parameter-slider::-webkit-slider-thumb:hover {
+  transform: scale(1.1);
+  box-shadow: 0 3px 10px var(--accent-glow);
+}
+
+.parameter-slider::-moz-range-thumb {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: var(--accent);
+  cursor: pointer;
+  border: none;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.2);
+  transition: transform 0.15s, box-shadow 0.15s;
+}
+
+.parameter-slider::-moz-range-thumb:hover {
+  transform: scale(1.1);
+  box-shadow: 0 3px 10px var(--accent-glow);
+}
+
+.parameter-slider::-moz-range-track {
+  height: 8px;
+  border-radius: 4px;
+  background: var(--bg-tertiary);
+}
+
+.parameter-slider::-webkit-slider-runnable-track {
+  width: 100%;
+  height: 8px;
+  border-radius: 4px;
+  background: var(--bg-tertiary);
+}
+
+.parameter-slider::-moz-range-track {
+  width: 100%;
+  height: 8px;
+  border-radius: 4px;
+  background: var(--bg-tertiary);
+}
+
+.parameter-slider:focus {
+  outline: none;
+}
+
+.parameter-slider:focus::-webkit-slider-thumb {
+  box-shadow: 0 0 0 3px var(--accent-glow);
+}
+
+.parameter-slider:focus::-moz-range-thumb {
+  box-shadow: 0 0 0 3px var(--accent-glow);
+}
+
+.slider-labels {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 0.5rem;
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  font-family: 'DM Sans', sans-serif;
 }

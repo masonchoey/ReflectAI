@@ -6,9 +6,12 @@ from celery import Task
 from sqlalchemy.orm import Session
 from sentence_transformers import SentenceTransformer
 import numpy as np
+from datetime import datetime, timezone
+from typing import Optional
 from database import SessionLocal
 from models import JournalEntry
 from celery_app import celery_app
+from hdbscan_clustering import run_clustering
 
 # Model state - loaded lazily on first use
 _embedding_model = None
@@ -184,4 +187,109 @@ def vectorize_all_entries(self, user_id: int):
             "status": "error",
             "user_id": user_id,
             "message": f"Error vectorizing entries: {str(e)}"
+        }
+
+
+@celery_app.task(base=DatabaseTask, bind=True, name="tasks.run_clustering")
+def run_clustering_task(
+    self,
+    user_id: int,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    min_cluster_size: Optional[int] = None,
+    min_samples: Optional[int] = None,
+    membership_threshold: Optional[float] = None,
+    cluster_selection_epsilon: Optional[float] = None,
+    umap_n_components: Optional[int] = None,
+    umap_n_neighbors: Optional[int] = None,
+    umap_min_dist: Optional[float] = None
+):
+    """
+    Run HDBSCAN clustering on a user's journal entries asynchronously.
+    
+    Args:
+        user_id: The ID of the user whose entries should be clustered
+        start_date: Optional start date (ISO format string) to filter entries
+        end_date: Optional end date (ISO format string) to filter entries
+        min_cluster_size: Optional minimum cluster size parameter
+        min_samples: Optional minimum samples parameter
+        membership_threshold: Optional membership threshold parameter
+        cluster_selection_epsilon: Optional cluster selection epsilon parameter
+        umap_n_components: Optional UMAP n_components parameter
+        umap_n_neighbors: Optional UMAP n_neighbors parameter
+        umap_min_dist: Optional UMAP min_dist parameter
+        
+    Returns:
+        dict: Result containing status, run_id, and clustering statistics
+    """
+    # Log that clustering is starting with all parameters
+    print("\n" + "="*60)
+    print("STARTING CLUSTERING RUN")
+    print("="*60)
+    print(f"User ID: {user_id}")
+    print(f"Date range: {start_date} to {end_date}")
+    print(f"Clustering parameters:")
+    print(f"  min_cluster_size: {min_cluster_size}")
+    print(f"  min_samples: {min_samples}")
+    print(f"  membership_threshold: {membership_threshold}")
+    print(f"  cluster_selection_epsilon: {cluster_selection_epsilon}")
+    print(f"UMAP parameters:")
+    print(f"  umap_n_components: {umap_n_components}")
+    print(f"  umap_n_neighbors: {umap_n_neighbors}")
+    print(f"  umap_min_dist: {umap_min_dist}")
+    print("="*60 + "\n")
+    
+    try:
+        # Parse date strings to datetime objects if provided
+        start_dt = None
+        end_dt = None
+        if start_date:
+            start_dt = datetime.fromisoformat(start_date.replace('Z', '+00:00'))
+        if end_date:
+            end_dt = datetime.fromisoformat(end_date.replace('Z', '+00:00'))
+        
+        # Run clustering (this will save the run to the database)
+        run_clustering(
+            user_id=user_id,
+            start_date=start_dt,
+            end_date=end_dt,
+            min_cluster_size=min_cluster_size,
+            min_samples=min_samples,
+            membership_threshold=membership_threshold,
+            cluster_selection_epsilon=cluster_selection_epsilon,
+            umap_n_components=umap_n_components,
+            umap_n_neighbors=umap_n_neighbors,
+            umap_min_dist=umap_min_dist,
+            generate_topics=True  # Automatically generate topic labels after clustering
+        )
+        
+        # Get the most recent run for this user
+        db = self.db
+        from models import ClusteringRun
+        latest_run = db.query(ClusteringRun).filter(
+            ClusteringRun.user_id == user_id
+        ).order_by(ClusteringRun.run_timestamp.desc()).first()
+        
+        if latest_run is None:
+            return {
+                "status": "error",
+                "user_id": user_id,
+                "message": "Clustering completed but no run was found"
+            }
+        
+        return {
+            "status": "success",
+            "user_id": user_id,
+            "run_id": latest_run.id,
+            "num_entries": latest_run.num_entries,
+            "num_clusters": latest_run.num_clusters,
+            "noise_entries": latest_run.noise_entries,
+            "start_date": latest_run.start_date.isoformat() if latest_run.start_date else None,
+            "end_date": latest_run.end_date.isoformat() if latest_run.end_date else None
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "user_id": user_id,
+            "message": f"Error running clustering: {str(e)}"
         }
