@@ -142,3 +142,11 @@ class ClusterVisualizationResponse(BaseModel):
     run_id: int
     points: List[ClusterPoint]
     clusters: List[ClusterInfoResponse]
+
+
+# Task status schemas
+class TaskStatusResponse(BaseModel):
+    task_id: str
+    status: str
+    result: Optional[dict] = None
+    error: Optional[str] = None

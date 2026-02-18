@@ -22,8 +22,12 @@ from schemas import (
     EmotionAnalysisResponse, EmotionResult, EmbeddingResponse,
     SimilarEntry, SemanticSearchResponse, TextSearchRequest, TextSearchResponse,
     TokenizationResponse, GoogleAuthRequest, AuthResponse, UserResponse,
-    ClusteringRunResponse, ClusterInfoResponse, ClusterPoint, ClusterVisualizationResponse
+    ClusteringRunResponse, ClusterInfoResponse, ClusterPoint, ClusterVisualizationResponse,
+    TaskStatusResponse
 )
+from tasks import vectorize_entry, vectorize_all_entries
+from celery.result import AsyncResult
+from celery_app import celery_app
 
 load_root_env()
 
@@ -345,17 +349,13 @@ def create_entry(
     db.commit()
     db.refresh(db_entry)
     
-    # Automatically generate embedding if model is available
+    # Queue vectorization task asynchronously
     try:
-        model = require_embedding_model()
-        embedding = model.encode(db_entry.content, normalize_embeddings=True)
-        db_entry.embedding = embedding
-        db.commit()
-        db.refresh(db_entry)
-    except HTTPException:
-        # Model not ready yet, embedding will be None
-        # This is fine - user can generate it later via /entries/{entry_id}/embed
-        pass
+        task = vectorize_entry.delay(db_entry.id)
+        print(f"Queued vectorization task {task.id} for entry {db_entry.id}")
+    except Exception as e:
+        print(f"Warning: Failed to queue vectorization task: {e}")
+        # Continue without embedding - user can generate it later
     
     return entry_to_response(db_entry)
 
@@ -407,15 +407,13 @@ def update_entry(
     entry.content = entry_update.content
     entry.edited_at = datetime.now(timezone.utc)
     
-    # Automatically regenerate embedding if model is available
+    # Queue vectorization task asynchronously to regenerate embedding
     try:
-        model = require_embedding_model()
-        embedding = model.encode(entry.content, normalize_embeddings=True)
-        entry.embedding = embedding
-    except HTTPException:
-        # Model not ready yet, embedding will remain as is or be None
-        # This is fine - user can regenerate it later via /entries/{entry_id}/embed
-        pass
+        task = vectorize_entry.delay(entry_id)
+        print(f"Queued vectorization task {task.id} for entry {entry_id}")
+    except Exception as e:
+        print(f"Warning: Failed to queue vectorization task: {e}")
+        # Continue without regenerating embedding - user can regenerate it later
     
     db.commit()
     db.refresh(entry)
@@ -502,15 +500,13 @@ def tokenize_entry(
     )
 
 
-@app.post("/entries/{entry_id}/embed", response_model=EmbeddingResponse)
+@app.post("/entries/{entry_id}/embed", response_model=TaskStatusResponse)
 def embed_entry(
     entry_id: int,
     current_user: User = Depends(require_auth),
     db: Session = Depends(get_db)
 ):
-    """Generate and store embedding for a journal entry (must belong to authenticated user)."""
-    model = require_embedding_model()
-    
+    """Queue embedding generation for a journal entry (must belong to authenticated user)."""
     entry = db.query(JournalEntry).filter(
         JournalEntry.id == entry_id,
         JournalEntry.user_id == current_user.id
@@ -518,63 +514,30 @@ def embed_entry(
     if entry is None:
         raise HTTPException(status_code=404, detail="Entry not found")
     
-    # Generate embedding using BGE-M3
-    embedding = model.encode(entry.content, normalize_embeddings=True)
+    # Queue vectorization task
+    task = vectorize_entry.delay(entry_id)
     
-    # Get token count
-    tokenizer = model.tokenizer
-    tokens = tokenizer.encode(entry.content)
-    token_count = len(tokens)
-    
-    # Store embedding (pgvector accepts numpy arrays directly)
-    entry.embedding = embedding
-    db.commit()
-    db.refresh(entry)
-    
-    return EmbeddingResponse(
-        entry_id=entry.id,
-        token_count=token_count,
-        embedding_dimension=len(embedding),
-        message=f"Successfully generated embedding with {len(embedding)} dimensions"
+    return TaskStatusResponse(
+        task_id=task.id,
+        status=task.state,
+        result=None
     )
 
 
-@app.post("/entries/embed-all", response_model=List[EmbeddingResponse])
+@app.post("/entries/embed-all", response_model=TaskStatusResponse)
 def embed_all_entries(
     current_user: User = Depends(require_auth),
     db: Session = Depends(get_db)
 ):
-    """Generate embeddings for all user's entries that don't have one."""
-    model = require_embedding_model()
+    """Queue embedding generation for all user's entries that don't have one."""
+    # Queue vectorization task for all entries
+    task = vectorize_all_entries.delay(current_user.id)
     
-    entries = db.query(JournalEntry).filter(
-        JournalEntry.user_id == current_user.id,
-        JournalEntry.embedding == None
-    ).all()
-    
-    if not entries:
-        return []
-    
-    results = []
-    tokenizer = model.tokenizer
-    
-    # Batch encode for efficiency
-    contents = [entry.content for entry in entries]
-    embeddings = model.encode(contents, normalize_embeddings=True, show_progress_bar=True)
-    
-    for entry, embedding in zip(entries, embeddings):
-        tokens = tokenizer.encode(entry.content)
-        entry.embedding = embedding  # pgvector accepts numpy arrays directly
-        
-        results.append(EmbeddingResponse(
-            entry_id=entry.id,
-            token_count=len(tokens),
-            embedding_dimension=len(embedding),
-            message=f"Successfully generated embedding"
-        ))
-    
-    db.commit()
-    return results
+    return TaskStatusResponse(
+        task_id=task.id,
+        status=task.state,
+        result=None
+    )
 
 
 @app.get("/entries/{entry_id}/similar", response_model=SemanticSearchResponse)
@@ -852,3 +815,35 @@ def get_cluster_visualization(
         points=points,
         clusters=clusters_list
     )
+
+
+# ============== Task Status Endpoints ==============
+
+@app.get("/tasks/{task_id}", response_model=TaskStatusResponse)
+def get_task_status(
+    task_id: str,
+    current_user: User = Depends(require_auth)
+):
+    """Get the status of a Celery task."""
+    task_result = AsyncResult(task_id, app=celery_app)
+    
+    response = TaskStatusResponse(
+        task_id=task_id,
+        status=task_result.state,
+        result=None,
+        error=None
+    )
+    
+    if task_result.ready():
+        if task_result.successful():
+            response.result = task_result.result
+        else:
+            response.error = str(task_result.info)
+    else:
+        # Task is still pending or in progress
+        if task_result.state == "PENDING":
+            response.result = {"message": "Task is waiting to be processed"}
+        elif task_result.state == "STARTED":
+            response.result = {"message": "Task is being processed"}
+    
+    return response

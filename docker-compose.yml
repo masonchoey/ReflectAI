@@ -18,6 +18,19 @@ services:
       timeout: 5s
       retries: 5
 
+  redis:
+    image: redis:7-alpine
+    container_name: reflectai-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   backend:
     build:
       context: ./backend
@@ -25,6 +38,7 @@ services:
     container_name: reflectai-backend
     environment:
       DATABASE_URL: postgresql://postgres:postgres@postgres:5432/reflectai
+      REDIS_URL: redis://redis:6379/0
       JWT_SECRET_KEY: ${JWT_SECRET_KEY:-change-this-secret-key-in-production}
       GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID}
       HF_HOME: /tmp/.cache/huggingface
@@ -39,7 +53,32 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      redis:
+        condition: service_healthy
     command: uvicorn main:app --host 0.0.0.0 --port 8000
+
+  celery-worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: reflectai-celery-worker
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/reflectai
+      REDIS_URL: redis://redis:6379/0
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:-change-this-secret-key-in-production}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID}
+      HF_HOME: /tmp/.cache/huggingface
+      TRANSFORMERS_CACHE: /tmp/.cache/huggingface
+      HF_DATASETS_CACHE: /tmp/.cache/huggingface
+    volumes:
+      - ./backend:/app
+      - huggingface_cache:/tmp/.cache/huggingface
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: celery -A celery_app worker --loglevel=info --concurrency=1
 
   frontend:
     build:
@@ -57,3 +96,4 @@ services:
 volumes:
   postgres_data:
   huggingface_cache:
+  redis_data:
