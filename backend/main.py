@@ -93,16 +93,24 @@ def load_models():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Lifespan context manager for startup/shutdown tasks."""
-    # Preload models in background to reduce cold start latency
-    def preload_models():
-        try:
-            load_models()
-        except Exception as e:
-            print(f"Warning: Failed to preload models: {e}")
+    # Check if model preloading is enabled (default: True for local development)
+    # Set ENABLE_MODEL_PRELOAD=false in production to disable
+    enable_preload = os.getenv("ENABLE_MODEL_PRELOAD", "true").lower() in ("true", "1", "yes")
     
-    # Start model loading in background thread
-    model_thread = threading.Thread(target=preload_models, daemon=True)
-    model_thread.start()
+    if enable_preload:
+        # Preload models in background to reduce cold start latency
+        def preload_models():
+            try:
+                load_models()
+            except Exception as e:
+                print(f"Warning: Failed to preload models: {e}")
+        
+        # Start model loading in background thread
+        model_thread = threading.Thread(target=preload_models, daemon=True)
+        model_thread.start()
+        print("Model preloading enabled - starting background model load...")
+    else:
+        print("Model preloading disabled - models will be loaded on first use")
     
     yield
     # Cleanup (if needed)
