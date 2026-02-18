@@ -1,7 +1,13 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 
-// Prefer Vite env; fall back to localhost for local dev
-const API_URL = import.meta.env.VITE_API_URL || 'https://reflectai-jhwv.onrender.com' // 'http://localhost:8000' if running locally
+// Prefer Vite env; fall back based on environment
+// In production (Render), use the backend URL directly
+// In development, use localhost
+const API_URL = import.meta.env.VITE_API_URL || (
+  window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
+    ? 'http://localhost:8000'
+    : 'https://reflectai-jhwv.onrender.com'
+)
 const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID || ''
 
 function App() {

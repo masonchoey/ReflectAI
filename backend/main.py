@@ -1,6 +1,7 @@
 import os
+import threading
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Depends, HTTPException, status
+from fastapi import FastAPI, Depends, HTTPException, status, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
@@ -87,15 +88,28 @@ def load_models():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Lifespan context manager for startup/shutdown tasks."""
-    # Models are now loaded lazily on first use
+    # Preload models in background to reduce cold start latency
+    def preload_models():
+        try:
+            load_models()
+        except Exception as e:
+            print(f"Warning: Failed to preload models: {e}")
+    
+    # Start model loading in background thread
+    model_thread = threading.Thread(target=preload_models, daemon=True)
+    model_thread.start()
+    
     yield
     # Cleanup (if needed)
 
 
 app = FastAPI(title="ReflectAI Journal API", lifespan=lifespan)
 
-# CORS configuration - allow both local development and Docker
-CORS_ORIGINS = os.getenv("CORS_ORIGINS", "http://localhost:5173,http://localhost").split(",")
+# CORS configuration - allow both local development and production
+# Accept comma-separated list of origins from environment variable
+CORS_ORIGINS_STR = os.getenv("CORS_ORIGINS", "http://localhost:5173,http://localhost")
+# Split and strip whitespace from each origin
+CORS_ORIGINS = [origin.strip() for origin in CORS_ORIGINS_STR.split(",") if origin.strip()]
 
 app.add_middleware(
     CORSMiddleware,
