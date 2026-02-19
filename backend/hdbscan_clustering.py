@@ -47,12 +47,12 @@ try:
 except ImportError:
     UMAP_AVAILABLE = False
 
-# Optional KeyBERT imports for topic labeling
+# Optional transformers imports for topic labeling
 try:
-    from keybert import KeyBERT
-    KEYBERT_AVAILABLE = True
+    from transformers import AutoModelForCausalLM, AutoTokenizer
+    TRANSFORMERS_AVAILABLE = True
 except ImportError:
-    KEYBERT_AVAILABLE = False
+    TRANSFORMERS_AVAILABLE = False
 
 # Add parent dir to path for imports
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -249,40 +249,42 @@ class ClusterMetadataDB:
 
 
 class TopicLabeler:
-    """Generate topic labels for clusters using KeyBERT."""
+    """Generate topic labels for clusters using SmolLM2."""
     
-    def __init__(self, model_name: str = "all-MiniLM-L6-v2"):
+    def __init__(self, model_name: str = "HuggingFaceTB/SmolLM2-135M-Instruct"):
         """
         Initialize the topic labeler.
         
         Args:
-            model_name: Sentence transformer model name for KeyBERT
+            model_name: Hugging Face model name for topic labeling
         """
         self.model_name = model_name
         self.model = None
+        self.tokenizer = None
+        self.device = "cpu"  # Use CPU by default for lightweight model
     
     def _load_model(self):
-        """Lazy load the KeyBERT model."""
+        """Lazy load the SmolLM2 model."""
         if self.model is not None:
             return
         
-        if not KEYBERT_AVAILABLE:
+        if not TRANSFORMERS_AVAILABLE:
             raise ImportError(
-                "KeyBERT not available. Install with: pip install keybert"
+                "transformers not available. Install with: pip install transformers"
             )
         
-        print(f"Loading KeyBERT with model: {self.model_name} (HF_HOME={HF_HOME})...")
-        # KeyBERT uses SentenceTransformer internally, which respects HF_HOME
-        self.model = KeyBERT(model=self.model_name)
-        print("KeyBERT model loaded successfully.")
+        print(f"Loading SmolLM2 model: {self.model_name} (HF_HOME={HF_HOME})...")
+        self.tokenizer = AutoTokenizer.from_pretrained(self.model_name)
+        self.model = AutoModelForCausalLM.from_pretrained(self.model_name).to(self.device)
+        print("SmolLM2 model loaded successfully.")
     
     def generate_topic_label(
         self,
         sample_entries: List[str],
         max_samples: int = 5,
-        max_entry_length: int = 500,
-        keyphrase_ngram_range: Tuple[int, int] = (1, 3),
-        top_n: int = 3
+        max_entry_length: int = 300,
+        max_new_tokens: int = 10,
+        temperature: float = 0.3
     ) -> str:
         """
         Generate a topic label for a cluster based on sample entries.
@@ -291,8 +293,8 @@ class TopicLabeler:
             sample_entries: List of journal entry texts from the cluster
             max_samples: Maximum number of samples to use
             max_entry_length: Maximum characters per entry
-            keyphrase_ngram_range: Range of n-grams to extract (default: (1, 3))
-            top_n: Number of top keywords to consider (default: 3)
+            max_new_tokens: Maximum tokens to generate for the label
+            temperature: Sampling temperature (lower = more deterministic)
         
         Returns:
             A short topic label (2-5 words)
@@ -301,46 +303,79 @@ class TopicLabeler:
         
         # Combine sample entries into a single document
         samples = sample_entries[:max_samples]
-        # Truncate long entries but keep more context than before
+        # Truncate long entries to keep prompt manageable
         truncated_samples = [
             s[:max_entry_length] + "..." if len(s) > max_entry_length else s 
             for s in samples
         ]
         
-        # Combine all entries into one document for keyword extraction
-        combined_text = " ".join(truncated_samples)
+        # Format entries for the prompt
+        cluster_entries = "\n\n".join([f"Entry {i+1}: {entry}" for i, entry in enumerate(truncated_samples)])
         
-        # Extract keywords using KeyBERT
-        keywords = self.model.extract_keywords(
-            combined_text,
-            keyphrase_ngram_range=keyphrase_ngram_range,
-            stop_words='english',
-            top_n=top_n,
-            use_mmr=True,  # Use Maximal Marginal Relevance for diversity
-            diversity=0.5   # Balance between relevance and diversity
-        )
+        # Create the prompt
+        prompt = f"""You are an expert at labeling topics from journal entries.
+
+Your task is to generate a short, coherent topic title that describes the common theme across the following journal entries.
+Requirements:
+- The title MUST be 2 to 5 words long
+- The title MUST be descriptive and specific
+- The title MUST NOT be a sentence
+- The title MUST NOT contain punctuation
+- The title MUST summarize the shared theme
+- The title MUST sound natural and human-readable
+- DO NOT explain your answer
+- ONLY output the title. DO NOT include any other text or formatting, such as "The Common Theme is:" or "The Topic is:" or "assistant" or any other text.
+
+Journal entries:
+{cluster_entries}
+
+Topic title:"""
         
-        # Combine top keywords into a label
-        if keywords:
-            # Extract just the keywords (first element of each tuple)
-            keyword_phrases = [kw[0] for kw in keywords]
-            # Join with spaces, limit to reasonable length
-            label = " ".join(keyword_phrases)
+        # Generate topic label
+        try:
+            messages = [{"role": "user", "content": prompt}]
+            input_text = self.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+            inputs = self.tokenizer.encode(input_text, return_tensors="pt").to(self.device)
             
-            # Limit length to keep it concise
-            if len(label) > 50:
-                # Take first few keywords that fit
-                words = label.split()
-                label = ""
-                for word in words:
-                    if len(label + " " + word) <= 50:
-                        label = label + " " + word if label else word
-                    else:
-                        break
+            outputs = self.model.generate(
+                inputs,
+                max_new_tokens=max_new_tokens,
+                temperature=temperature,
+                top_p=0.9,
+                do_sample=True,
+                pad_token_id=self.tokenizer.eos_token_id
+            )
+
+            # Decode and extract the label
+            full_output = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
             
-            return label.strip()
-        else:
-            return "Unlabeled Cluster"
+            # Extract just the generated title after the prompt
+            # The model output includes the prompt, so we need to extract just the new text
+            if "Topic title:" in full_output:
+                label = full_output.split("Topic title:")[-1].strip()
+            else:
+                label = full_output[len(input_text):].strip()
+
+            # Clean up the label
+            label = label.split("\n")[1].strip()  # Take only second line (get rid of first line which is "assistant")
+            label = label.strip('.,!?;:"\'')  # Remove punctuation
+            #remove the string "The Common Theme is:", if it exists
+            if "The Common Theme is:" in label:
+                label = label.replace("The Common Theme is:", "").strip()
+            print(f"Label: {label}")
+            
+            # Validate length (2-5 words)
+            # words = label.split()
+            # if len(words) < 2:
+            #     return "Unlabeled Cluster, length too short"
+            # elif len(words) > 5:
+            #     label = " ".join(words[:5])
+            
+            return label if label else "Unlabeled Cluster, no label generated"
+            
+        except Exception as e:
+            print(f"Error generating label: {e}")
+            return "Unlabeled Cluster, error generating label"
     
     def generate_labels_for_clusters(
         self,
@@ -654,7 +689,7 @@ def get_embeddings_from_entries(entries: List[JournalEntry]) -> Tuple[np.ndarray
         entries: List of JournalEntry objects with embeddings
     
     Returns:
-        Tuple of (embeddings array with shape (n_entries, 1024), list of entry IDs)
+        Tuple of (embeddings array with shape (n_entries, 384), list of entry IDs)
     """
     embeddings = []
     entry_ids = []
@@ -677,7 +712,7 @@ def get_embeddings_from_entries(entries: List[JournalEntry]) -> Tuple[np.ndarray
             entry_ids.append(entry.id)
     
     if not embeddings:
-        return np.array([]).reshape(0, 1024), []
+        return np.array([]).reshape(0, 384), []
     
     # Stack into 2D array: shape (n_entries, embedding_dim)
     return np.vstack(embeddings), entry_ids
@@ -724,7 +759,7 @@ def run_clustering(
     umap_min_dist: Optional[float] = None,
     umap_metric: str = 'cosine',
     generate_topics: bool = False,
-    topic_model: str = "all-MiniLM-L6-v2",
+    topic_model: str = "HuggingFaceTB/SmolLM2-135M-Instruct",
     metadata_db: Optional[str] = None,
     limit: Optional[int] = None,
     visualize: bool = False,
@@ -754,8 +789,8 @@ def run_clustering(
         use_umap: Whether to use UMAP dimensionality reduction (default: True)
         umap_n_components: UMAP output dimensions (default: 10)
         umap_metric: UMAP distance metric (default: 'cosine')
-        generate_topics: Whether to generate topic labels using KeyBERT (default: False)
-        topic_model: Sentence transformer model name for KeyBERT (default: "all-MiniLM-L6-v2")
+        generate_topics: Whether to generate topic labels using SmolLM2 (default: False)
+        topic_model: Hugging Face model name for topic labeling (default: "HuggingFaceTB/SmolLM2-135M-Instruct")
         metadata_db: Deprecated - metadata is now stored in PostgreSQL
         limit: Maximum number of entries to load (None for all)
         visualize: Whether to generate visualization plots
@@ -946,8 +981,8 @@ def run_clustering(
         topic_labels = {}
         
         if generate_topics:
-            if not KEYBERT_AVAILABLE:
-                print("\nWARNING: KeyBERT not available. Install with: pip install keybert")
+            if not TRANSFORMERS_AVAILABLE:
+                print("\nWARNING: transformers not available. Install with: pip install transformers")
                 print("Skipping topic generation...")
             else:
                 print("\n--- Generating Topic Labels ---")
@@ -1255,7 +1290,7 @@ Examples:
   # Run with recommended defaults (UMAP + leaf selection)
   python hdbscan_clustering.py --user-id 1 --visualize
 
-  # Generate topic labels using KeyBERT
+  # Generate topic labels using SmolLM2
   python hdbscan_clustering.py --user-id 1 --generate-topics
 
   # Fine-tune for more/fewer clusters
@@ -1288,9 +1323,9 @@ Examples:
     
     # Topic generation parameters
     parser.add_argument("--generate-topics", action="store_true", 
-                       help="Generate topic labels using KeyBERT")
-    parser.add_argument("--topic-model", type=str, default="all-MiniLM-L6-v2",
-                       help="Sentence transformer model for KeyBERT (default: all-MiniLM-L6-v2)")
+                       help="Generate topic labels using SmolLM2")
+    parser.add_argument("--topic-model", type=str, default="HuggingFaceTB/SmolLM2-135M-Instruct",
+                       help="Hugging Face model for topic labeling (default: HuggingFaceTB/SmolLM2-135M-Instruct)")
     
     # Other options
     parser.add_argument("--metadata-db", type=str, default=None, help="Deprecated: metadata is now stored in PostgreSQL")

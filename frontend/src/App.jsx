@@ -679,156 +679,157 @@ function App() {
       </div>
 
       {activeTab === 'entries' && (
-        <>
-          <form className="journal-form" onSubmit={handleSubmit}>
-        <input
-          type="text"
-          value={title}
-          onChange={(e) => setTitle(e.target.value)}
-          placeholder="Entry title (optional)"
-          disabled={submitting}
-          className="title-input"
-          maxLength={200}
-        />
-        <textarea
-          value={content}
-          onChange={(e) => setContent(e.target.value)}
-          placeholder="What's on your mind today? Write your thoughts here..."
-          disabled={submitting}
-        />
-        <button type="submit" disabled={submitting || !content.trim()}>
-          {submitting ? 'Saving...' : 'Save Entry'}
-        </button>
-      </form>
-
-      <section className="entries-section">
-        <h2>Your Entries</h2>
-        
-        {loading ? (
-          <div className="loading">Loading entries...</div>
-        ) : entries.length === 0 ? (
-          <div className="empty-state">
-            <p>No entries yet. Start writing your first journal entry above.</p>
-          </div>
-        ) : (
-          <div className="entries-list">
-            {entries.map((entry) => (
-              <article key={entry.id} className="entry-card">
-                <div className="entry-title-section">
-                  <h3 className="entry-title">{entry.title || 'Untitled Entry'}</h3>
-                </div>
-                <div className="entry-header">
-                  <div className="timestamp-container">
-                    <span className="timestamp">{formatDate(entry.created_at)}</span>
-                    {entry.edited_at && (
-                      <span className="edited-timestamp">
-                        (Edited: {formatDate(entry.edited_at)})
-                      </span>
-                    )}
-                  </div>
-                  {editingId !== entry.id && (
-                    <div className="entry-actions">
-                      <button 
-                        className="analyze-button"
-                        onClick={() => toggleEmotionBreakdown(entry.id)}
-                        disabled={analyzingId === entry.id || !emotionResults[entry.id]}
-                        aria-label="Toggle emotion breakdown"
-                      >
-                        {analyzingId === entry.id
-                          ? '🔄 Analyzing...'
-                          : emotionResults[entry.id]
-                            ? (expandedEmotionEntries[entry.id] ? '🙈 Hide Breakdown' : '🔍 View Breakdown')
-                            : '🔮 Preparing analysis...'}
-                      </button>
-                      <button 
-                        className="edit-button"
-                        onClick={() => handleEdit(entry)}
-                        aria-label="Edit entry"
-                      >
-                        ✏️ Edit
-                      </button>
+        <div className="entries-layout">
+          <section className="entries-section">
+            <h2>Your Entries</h2>
+            
+            {loading ? (
+              <div className="loading">Loading entries...</div>
+            ) : entries.length === 0 ? (
+              <div className="empty-state">
+                <p>No entries yet. Start writing your first journal entry.</p>
+              </div>
+            ) : (
+              <div className="entries-list">
+                {entries.map((entry) => (
+                  <article key={entry.id} className="entry-card">
+                    <div className="entry-title-section">
+                      <h3 className="entry-title">{entry.title || 'Untitled Entry'}</h3>
                     </div>
-                  )}
-                </div>
-                
-                {editingId === entry.id ? (
-                  <div className="edit-form">
-                    <input
-                      type="text"
-                      value={editTitle}
-                      onChange={(e) => setEditTitle(e.target.value)}
-                      placeholder="Entry title (optional)"
-                      disabled={submitting}
-                      className="title-input"
-                      maxLength={200}
-                    />
-                    <textarea
-                      value={editContent}
-                      onChange={(e) => setEditContent(e.target.value)}
-                      disabled={submitting}
-                      autoFocus
-                    />
-                    <div className="edit-buttons">
-                      <button 
-                        onClick={() => handleUpdateEntry(entry.id)}
-                        disabled={submitting || !editContent.trim()}
-                        className="save-edit-button"
-                      >
-                        {submitting ? 'Saving...' : 'Save'}
-                      </button>
-                      <button 
-                        onClick={handleCancelEdit}
-                        disabled={submitting}
-                        className="cancel-edit-button"
-                      >
-                        Cancel
-                      </button>
-                    </div>
-                  </div>
-                ) : (
-                  <>
-                    <p className="content">{entry.content}</p>
-                    
-                    {entry.emotion && (
-                      <div className="emotion-display">
-                        <div className="primary-emotion">
-                          <span className="emotion-emoji">{getEmotionEmoji(entry.emotion)}</span>
-                          <span className="emotion-label">{entry.emotion}</span>
-                          <span className="emotion-confidence">
-                            {(entry.emotion_score * 100).toFixed(1)}% confidence
+                    <div className="entry-header">
+                      <div className="timestamp-container">
+                        <span className="timestamp">{formatDate(entry.created_at)}</span>
+                        {entry.edited_at && (
+                          <span className="edited-timestamp">
+                            (Edited: {formatDate(entry.edited_at)})
                           </span>
-                        </div>
-                        
-                        {emotionResults[entry.id] && expandedEmotionEntries[entry.id] && (
-                          <div className="emotion-breakdown">
-                            <span className="breakdown-label">Top emotions:</span>
-                            <div className="emotion-bars">
-                              {emotionResults[entry.id].slice(0, 5).map((emotion, idx) => (
-                                <div key={idx} className="emotion-bar-item">
-                                  <span className="bar-emoji">{getEmotionEmoji(emotion.label)}</span>
-                                  <span className="bar-label">{emotion.label}</span>
-                                  <div className="bar-container">
-                                    <div 
-                                      className="bar-fill"
-                                      style={{ width: `${emotion.score * 100}%` }}
-                                    />
-                                  </div>
-                                  <span className="bar-score">{(emotion.score * 100).toFixed(1)}%</span>
-                                </div>
-                              ))}
-                            </div>
-                          </div>
                         )}
                       </div>
+                      {editingId !== entry.id && (
+                        <div className="entry-actions">
+                          <button 
+                            className="analyze-button"
+                            onClick={() => toggleEmotionBreakdown(entry.id)}
+                            disabled={analyzingId === entry.id || !emotionResults[entry.id]}
+                            aria-label="Toggle emotion breakdown"
+                          >
+                            {analyzingId === entry.id
+                              ? '🔄 Analyzing...'
+                              : emotionResults[entry.id]
+                                ? (expandedEmotionEntries[entry.id] ? '🙈 Hide Breakdown' : '🔍 View Breakdown')
+                                : '🔮 Preparing analysis...'}
+                          </button>
+                          <button 
+                            className="edit-button"
+                            onClick={() => handleEdit(entry)}
+                            aria-label="Edit entry"
+                          >
+                            ✏️ Edit
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                    
+                    {editingId === entry.id ? (
+                      <div className="edit-form">
+                        <input
+                          type="text"
+                          value={editTitle}
+                          onChange={(e) => setEditTitle(e.target.value)}
+                          placeholder="Entry title (optional)"
+                          disabled={submitting}
+                          className="title-input"
+                          maxLength={200}
+                        />
+                        <textarea
+                          value={editContent}
+                          onChange={(e) => setEditContent(e.target.value)}
+                          disabled={submitting}
+                          autoFocus
+                        />
+                        <div className="edit-buttons">
+                          <button 
+                            onClick={() => handleUpdateEntry(entry.id)}
+                            disabled={submitting || !editContent.trim()}
+                            className="save-edit-button"
+                          >
+                            {submitting ? 'Saving...' : 'Save'}
+                          </button>
+                          <button 
+                            onClick={handleCancelEdit}
+                            disabled={submitting}
+                            className="cancel-edit-button"
+                          >
+                            Cancel
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      <>
+                        <p className="content">{entry.content}</p>
+                        
+                        {entry.emotion && (
+                          <div className="emotion-display">
+                            <div className="primary-emotion">
+                              <span className="emotion-emoji">{getEmotionEmoji(entry.emotion)}</span>
+                              <span className="emotion-label">{entry.emotion}</span>
+                              <span className="emotion-confidence">
+                                {(entry.emotion_score * 100).toFixed(1)}% confidence
+                              </span>
+                            </div>
+                            
+                            {emotionResults[entry.id] && expandedEmotionEntries[entry.id] && (
+                              <div className="emotion-breakdown">
+                                <span className="breakdown-label">Top emotions:</span>
+                                <div className="emotion-bars">
+                                  {emotionResults[entry.id].slice(0, 5).map((emotion, idx) => (
+                                    <div key={idx} className="emotion-bar-item">
+                                      <span className="bar-emoji">{getEmotionEmoji(emotion.label)}</span>
+                                      <span className="bar-label">{emotion.label}</span>
+                                      <div className="bar-container">
+                                        <div 
+                                          className="bar-fill"
+                                          style={{ width: `${emotion.score * 100}%` }}
+                                        />
+                                      </div>
+                                      <span className="bar-score">{(emotion.score * 100).toFixed(1)}%</span>
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </>
                     )}
-                  </>
-                )}
-              </article>
-            ))}
-          </div>
-        )}
-      </section>
-        </>
+                  </article>
+                ))}
+              </div>
+            )}
+          </section>
+
+          <form className="journal-form" onSubmit={handleSubmit}>
+            <h2>New Entry</h2>
+            <input
+              type="text"
+              value={title}
+              onChange={(e) => setTitle(e.target.value)}
+              placeholder="Entry title (optional)"
+              disabled={submitting}
+              className="title-input"
+              maxLength={200}
+            />
+            <textarea
+              value={content}
+              onChange={(e) => setContent(e.target.value)}
+              placeholder="What's on your mind today? Write your thoughts here..."
+              disabled={submitting}
+            />
+            <button type="submit" disabled={submitting || !content.trim()}>
+              {submitting ? 'Saving...' : 'Save Entry'}
+            </button>
+          </form>
+        </div>
       )}
 
       {activeTab === 'clusters' && (
@@ -1350,6 +1351,7 @@ function ClusterVisualization({ data, hoveredPoint, onPointHover }) {
   const svgRef = useRef(null)
   const [dimensions, setDimensions] = useState({ width: 800, height: 600 })
   const [transform, setTransform] = useState({ x: 0, y: 0, scale: 1 })
+  const [selectedClusterId, setSelectedClusterId] = useState(null)
   const isPanningRef = useRef(false)
   const lastPosRef = useRef({ x: 0, y: 0 })
 
@@ -1436,11 +1438,28 @@ function ClusterVisualization({ data, hoveredPoint, onPointHover }) {
     y: y * scale + offsetY
   })
 
+  // Calculate if a point should be visible/highlighted based on selected cluster
+  // Only shows points where the selected cluster is the PRIMARY cluster
+  const isPointVisible = (point) => {
+    if (selectedClusterId === null) return true
+    // Check if the selected cluster is the PRIMARY cluster for this point
+    if (point.all_memberships && point.all_memberships.length > 0) {
+      const primaryMembership = point.all_memberships.find(m => m.is_primary)
+      return primaryMembership && primaryMembership.cluster_id === selectedClusterId
+    }
+    // Fallback to primary cluster if all_memberships not available
+    return point.cluster_id === selectedClusterId
+  }
+
   const tooltipLayout = (() => {
     if (!hoveredPoint) return null
     const base = transformPoint(hoveredPoint.x, hoveredPoint.y)
-    const tooltipWidth = 260
-    const tooltipHeight = 80
+    const tooltipWidth = 280
+    // Calculate height based on number of memberships
+    const memberships = hoveredPoint.all_memberships || []
+    const baseHeight = 60
+    const membershipHeight = 28
+    const tooltipHeight = baseHeight + (memberships.length * membershipHeight)
     let x = base.x + 12
     let y = base.y - tooltipHeight - 12
 
@@ -1455,7 +1474,7 @@ function ClusterVisualization({ data, hoveredPoint, onPointHover }) {
       y = base.y + 12
     }
 
-    return { x, y, width: tooltipWidth }
+    return { x, y, width: tooltipWidth, height: tooltipHeight }
   })()
 
   const handleMouseDown = (event) => {
@@ -1534,6 +1553,16 @@ function ClusterVisualization({ data, hoveredPoint, onPointHover }) {
           const pos = transformPoint(point.x, point.y)
           const isHovered = hoveredPoint?.entry_id === point.entry_id
           const color = clusterColors[point.cluster_id] || '#CCCCCC'
+          const isVisible = isPointVisible(point)
+          
+          // Calculate opacity: fully hide if filtered out, normal if visible
+          let opacity = point.cluster_id === -1 ? 0.3 : 0.8
+          if (selectedClusterId !== null && !isVisible) {
+            opacity = 0 // Fully hidden when filtered out (only show primary cluster matches)
+          }
+          
+          // Only allow hover if point is visible (or no cluster is selected)
+          const isHoverable = selectedClusterId === null || isVisible
           
           return (
             <circle
@@ -1544,10 +1573,22 @@ function ClusterVisualization({ data, hoveredPoint, onPointHover }) {
               fill={color}
               stroke={isHovered ? '#fff' : 'none'}
               strokeWidth={isHovered ? 2 : 0}
-              opacity={point.cluster_id === -1 ? 0.3 : 0.8}
-              onMouseEnter={() => onPointHover(point)}
-              onMouseLeave={() => onPointHover(null)}
-              style={{ cursor: 'pointer', transition: 'r 0.2s' }}
+              opacity={opacity}
+              onMouseEnter={() => {
+                if (isHoverable) {
+                  onPointHover(point)
+                }
+              }}
+              onMouseLeave={() => {
+                if (isHoverable) {
+                  onPointHover(null)
+                }
+              }}
+              style={{ 
+                cursor: isHoverable ? 'pointer' : 'default', 
+                transition: 'all 0.2s',
+                pointerEvents: opacity === 0 ? 'none' : 'auto'
+              }}
             />
           )
         })}
@@ -1559,27 +1600,70 @@ function ClusterVisualization({ data, hoveredPoint, onPointHover }) {
           style={{
             left: tooltipLayout.x,
             top: tooltipLayout.y,
-            width: tooltipLayout.width
+            width: tooltipLayout.width,
+            minHeight: tooltipLayout.height
           }}
         >
           <div className="cluster-tooltip-title">
             {hoveredPoint.title || 'Untitled Entry'}
           </div>
           <div className="cluster-tooltip-body">
-            {hoveredPoint.cluster_name}
+            {hoveredPoint.all_memberships && hoveredPoint.all_memberships.length > 0 ? (
+              <div className="cluster-memberships-list">
+                {hoveredPoint.all_memberships.map((membership, idx) => (
+                  <div 
+                    key={idx} 
+                    className={`cluster-membership-tag ${membership.is_primary ? 'primary' : 'secondary'}`}
+                  >
+                    <span className="membership-indicator">
+                      {membership.is_primary ? '★' : '○'}
+                    </span>
+                    <span className="membership-name">{membership.cluster_name}</span>
+                    <span className="membership-probability">
+                      {(membership.membership_probability * 100).toFixed(0)}%
+                    </span>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="cluster-membership-tag primary">
+                <span className="membership-indicator">★</span>
+                <span className="membership-name">{hoveredPoint.cluster_name}</span>
+                <span className="membership-probability">
+                  {(hoveredPoint.membership_probability * 100).toFixed(0)}%
+                </span>
+              </div>
+            )}
           </div>
         </div>
       )}
 
       {/* Legend */}
       <div className="cluster-legend">
-        <h3>Clusters</h3>
+        <div className="legend-header">
+          <h3>Clusters</h3>
+          {selectedClusterId !== null && (
+            <button
+              className="legend-clear-filter"
+              onClick={() => setSelectedClusterId(null)}
+              type="button"
+            >
+              Clear Filter
+            </button>
+          )}
+        </div>
         <div className="legend-items">
           {data.clusters.map((cluster) => {
             const color = clusterColors[cluster.cluster_id] || '#CCCCCC'
             const name = cluster.topic_label || `Cluster ${cluster.cluster_id}`
+            const isSelected = selectedClusterId === cluster.cluster_id
             return (
-              <div key={cluster.cluster_id} className="legend-item">
+              <div 
+                key={cluster.cluster_id} 
+                className={`legend-item ${isSelected ? 'selected' : ''}`}
+                onClick={() => setSelectedClusterId(isSelected ? null : cluster.cluster_id)}
+                style={{ cursor: 'pointer' }}
+              >
                 <span
                   className="legend-color"
                   style={{ backgroundColor: color }}
@@ -1591,7 +1675,11 @@ function ClusterVisualization({ data, hoveredPoint, onPointHover }) {
           })}
           {/* Show noise if present */}
           {data.points.some(p => p.cluster_id === -1) && (
-            <div className="legend-item">
+            <div 
+              className={`legend-item ${selectedClusterId === -1 ? 'selected' : ''}`}
+              onClick={() => setSelectedClusterId(selectedClusterId === -1 ? null : -1)}
+              style={{ cursor: 'pointer' }}
+            >
               <span
                 className="legend-color"
                 style={{ backgroundColor: '#CCCCCC' }}

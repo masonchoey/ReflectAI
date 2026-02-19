@@ -142,20 +142,54 @@ class ClusterInfoResponse(BaseModel):
         from_attributes = True
 
 
+class ClusterMembership(BaseModel):
+    """Represents a single cluster membership for an entry."""
+    cluster_id: int
+    cluster_name: str
+    membership_probability: float
+    is_primary: bool
+
+
 class ClusterPoint(BaseModel):
     entry_id: int
     title: Optional[str] = None
     x: float
     y: float
-    cluster_id: int
-    cluster_name: str
-    membership_probability: float
+    cluster_id: int  # Primary cluster ID
+    cluster_name: str  # Primary cluster name
+    membership_probability: float  # Primary cluster probability
+    all_memberships: List[ClusterMembership] = []  # All cluster memberships
 
 
 class ClusterVisualizationResponse(BaseModel):
     run_id: int
     points: List[ClusterPoint]
     clusters: List[ClusterInfoResponse]
+
+
+class EntryClusterMembershipsResponse(BaseModel):
+    """Response showing all cluster memberships for a specific entry."""
+    entry_id: int
+    run_id: int
+    memberships: List[ClusterMembership]
+
+
+class ClusterEntriesResponse(BaseModel):
+    """Response showing all entries in a specific cluster."""
+    cluster_id: int
+    run_id: int
+    cluster_name: str
+    entries: List['EntryClusterInfo']
+
+
+class EntryClusterInfo(BaseModel):
+    """Information about an entry in a cluster."""
+    entry_id: int
+    title: Optional[str] = None
+    content: str
+    membership_probability: float
+    is_primary: bool
+    created_at: datetime
 
 
 # Task status schemas

@@ -183,6 +183,44 @@ header p {
   font-size: 0.85rem;
 }
 
+/* Entries Layout */
+.entries-layout {
+  display: flex;
+  flex-direction: column;
+  gap: 2rem;
+  max-width: 1400px;
+  margin: 0 auto;
+}
+
+/* Responsive: two-column layout on larger screens */
+@media (min-width: 1024px) {
+  .entries-layout {
+    flex-direction: row;
+    align-items: flex-start;
+    gap: 2rem;
+  }
+  
+  .entries-layout .entries-section {
+    flex: 1;
+    min-width: 0;
+    margin: 0;
+    max-width: none;
+  }
+  
+  .entries-layout .journal-form {
+    flex: 1;
+    margin: 0;
+    margin-bottom: 0;
+    max-width: none;
+    margin-left: 0;
+    margin-right: 0;
+    position: sticky;
+    top: 1rem;
+    max-height: calc(100vh - 2rem);
+    overflow-y: auto;
+  }
+}
+
 /* Journal Form */
 .journal-form {
   background: var(--bg-secondary);
@@ -190,9 +228,20 @@ header p {
   border-radius: 12px;
   padding: 1.5rem;
   margin-bottom: 2.5rem;
+  width: 100%;
   max-width: 800px;
   margin-left: auto;
   margin-right: auto;
+}
+
+.journal-form h2 {
+  font-family: 'DM Sans', sans-serif;
+  font-size: 1.25rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  margin-bottom: 1rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
 }
 
 .journal-form .title-input {
@@ -223,7 +272,7 @@ header p {
 
 .journal-form textarea {
   width: 100%;
-  min-height: 150px;
+  min-height: 500px;
   padding: 1rem;
   font-family: 'Crimson Pro', Georgia, serif;
   font-size: 1.15rem;
@@ -274,6 +323,7 @@ header p {
 .entries-section {
   max-width: 800px;
   margin: 0 auto;
+  width: 100%;
 }
 
 .entries-section h2 {
@@ -784,6 +834,56 @@ header p {
   word-wrap: break-word;
 }
 
+.cluster-memberships-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+
+.cluster-membership-tag {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.4rem 0.6rem;
+  border-radius: 6px;
+  background: var(--bg-tertiary);
+  transition: background 0.2s;
+}
+
+.cluster-membership-tag.primary {
+  background: rgba(59, 130, 246, 0.15);
+  border: 1px solid rgba(59, 130, 246, 0.3);
+}
+
+.cluster-membership-tag.secondary {
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-color);
+}
+
+.membership-indicator {
+  font-size: 0.9rem;
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.cluster-membership-tag.secondary .membership-indicator {
+  color: var(--text-secondary);
+  opacity: 0.7;
+}
+
+.membership-name {
+  flex: 1;
+  font-weight: 500;
+  color: var(--text-primary);
+}
+
+.membership-probability {
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  font-weight: 600;
+}
+
 .cluster-legend {
   margin-top: 1.5rem;
   padding: 1rem;
@@ -791,12 +891,37 @@ header p {
   border-radius: 8px;
 }
 
+.legend-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.75rem;
+}
+
 .cluster-legend h3 {
   font-family: 'DM Sans', sans-serif;
   font-size: 1rem;
   font-weight: 600;
   color: var(--text-primary);
-  margin-bottom: 0.75rem;
+  margin: 0;
+}
+
+.legend-clear-filter {
+  padding: 0.4rem 0.8rem;
+  font-size: 0.85rem;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all 0.2s;
+  font-family: 'DM Sans', sans-serif;
+}
+
+.legend-clear-filter:hover {
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  border-color: var(--accent);
 }
 
 .legend-items {
@@ -809,6 +934,20 @@ header p {
   display: flex;
   align-items: center;
   gap: 0.5rem;
+  padding: 0.4rem 0.6rem;
+  border-radius: 6px;
+  transition: all 0.2s;
+  user-select: none;
+}
+
+.legend-item:hover {
+  background: var(--bg-secondary);
+}
+
+.legend-item.selected {
+  background: rgba(59, 130, 246, 0.15);
+  border: 1px solid rgba(59, 130, 246, 0.4);
+  font-weight: 600;
 }
 
 .legend-color {

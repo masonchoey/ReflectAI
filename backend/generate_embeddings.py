@@ -1,8 +1,8 @@
 """
 Embedding Generation for Journal Entries
 
-This script generates embeddings for journal entries using the BGE-M3 model
-and saves them directly to the database's embedding field (vector 1024).
+This script generates embeddings for journal entries using the Granite-embedding-30m-english model
+and saves them directly to the database's embedding field (vector 384).
 """
 
 import os
@@ -37,13 +37,13 @@ from models import JournalEntry, User
 class EmbeddingGenerator:
     """Generates and manages embeddings for journal entries."""
     
-    def __init__(self, model_name: str = "BAAI/bge-m3"):
+    def __init__(self, model_name: str = "ibm-granite/granite-embedding-30m-english"):
         """
         Initialize the embedding generator.
         
         Args:
             model_name: The name of the sentence transformer model to use.
-                       BGE-M3 produces 1024-dimensional embeddings.
+                       Granite-embedding-30m-english produces 384-dimensional embeddings.
         """
         self.model_name = model_name
         self.model = None
@@ -58,7 +58,7 @@ class EmbeddingGenerator:
             )
             print("Model loaded successfully.")
     
-    def generate_embedding(self, text: str, max_length: int = 8192) -> np.ndarray:
+    def generate_embedding(self, text: str, max_length: int = 2048) -> np.ndarray:
         """
         Generate embedding for a single text.
         
@@ -67,11 +67,11 @@ class EmbeddingGenerator:
             max_length: Maximum character length to truncate to
         
         Returns:
-            1024-dimensional embedding vector
+            384-dimensional embedding vector
         """
         self._load_model()
         
-        # Truncate text if needed (BGE-M3 supports ~8192 tokens)
+        # Truncate text if needed (Granite-embedding-30m-english supports 512 tokens, ~2048 chars)
         truncated_text = text[:max_length] if text else ""
         
         embedding = self.model.encode(
@@ -86,7 +86,7 @@ class EmbeddingGenerator:
         self,
         texts: List[str],
         batch_size: int = 8,
-        max_length: int = 8192
+        max_length: int = 2048
     ) -> np.ndarray:
         """
         Generate embeddings for multiple texts in batches.
@@ -97,7 +97,7 @@ class EmbeddingGenerator:
             max_length: Maximum character length per text
         
         Returns:
-            Array of embeddings with shape (n_texts, 1024)
+            Array of embeddings with shape (n_texts, 384)
         """
         self._load_model()
         
@@ -179,7 +179,7 @@ def save_embedding_to_db(db: Session, entry: JournalEntry, embedding: np.ndarray
     Args:
         db: Database session
         entry: The journal entry to update
-        embedding: The embedding vector (1024-dimensional)
+        embedding: The embedding vector (384-dimensional)
     """
     # pgvector accepts numpy arrays directly
     entry.embedding = embedding

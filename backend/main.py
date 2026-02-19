@@ -22,7 +22,9 @@ from schemas import (
     EmotionAnalysisResponse, EmotionResult, EmbeddingResponse,
     SimilarEntry, SemanticSearchResponse, TextSearchRequest, TextSearchResponse,
     TokenizationResponse, GoogleAuthRequest, AuthResponse, UserResponse,
-    ClusteringRunRequest, ClusteringRunResponse, ClusterInfoResponse, ClusterPoint, ClusterVisualizationResponse,
+    ClusteringRunRequest, ClusteringRunResponse, ClusterInfoResponse, ClusterPoint, 
+    ClusterVisualizationResponse, ClusterMembership, EntryClusterMembershipsResponse,
+    ClusterEntriesResponse, EntryClusterInfo,
     TaskStatusResponse
 )
 from tasks import vectorize_entry, vectorize_all_entries, run_clustering_task
@@ -48,7 +50,8 @@ ACCESS_TOKEN_EXPIRE_DAYS = 7
 # Google OAuth Configuration
 GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "")
 
-Base.metadata.create_all(bind=engine)
+# Note: Database tables are created in the lifespan startup function
+# to ensure the database is ready before attempting to create tables
 
 # Security scheme for JWT
 security = HTTPBearer(auto_error=False)
@@ -78,12 +81,12 @@ def load_models():
     )
     print("Emotion classifier loaded successfully!")
     
-    print("Loading BAAI/bge-m3 model...")
+    print("Loading ibm-granite/granite-embedding-30m-english model...")
     embedding_model = SentenceTransformer(
-        "BAAI/bge-m3",
+        "ibm-granite/granite-embedding-30m-english",
         cache_folder=HF_HOME
     )
-    print("BGE-M3 model loaded successfully!")
+    print("Granite-embedding-30m-english model loaded successfully!")
     
     models_loaded = True
     print("All models loaded and ready!")
@@ -92,6 +95,30 @@ def load_models():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Lifespan context manager for startup/shutdown tasks."""
+    # Initialize database tables with retry logic
+    import time
+    from sqlalchemy.exc import OperationalError
+    
+    max_retries = 5
+    retry_delay = 2
+    
+    for attempt in range(max_retries):
+        try:
+            Base.metadata.create_all(bind=engine)
+            print("Database tables initialized successfully")
+            break
+        except OperationalError as e:
+            if attempt < max_retries - 1:
+                print(f"Database not ready yet (attempt {attempt + 1}/{max_retries}): {e}")
+                print(f"Retrying in {retry_delay} seconds...")
+                time.sleep(retry_delay)
+            else:
+                print(f"Warning: Failed to initialize database tables after {max_retries} attempts: {e}")
+                print("Tables will be created on first database access")
+        except Exception as e:
+            print(f"Warning: Failed to create database tables: {e}")
+            break
+    
     # Check if model preloading is enabled (default: True for local development)
     # Set ENABLE_MODEL_PRELOAD=false in production to disable
     enable_preload = os.getenv("ENABLE_MODEL_PRELOAD", "true").lower() in ("true", "1", "yes")
@@ -778,9 +805,17 @@ def get_cluster_visualization(
         EntryClusterAssignment.run_id == run_id
     ).all()
     
-    # Create a mapping: entry_id -> primary cluster assignment
-    entry_to_cluster = {}
+    # Create mappings: entry_id -> primary cluster assignment AND all memberships
+    entry_to_cluster = {}  # Primary cluster only
+    entry_to_all_memberships = {}  # All cluster memberships
+    
     for assignment in assignments:
+        # Track all memberships
+        if assignment.entry_id not in entry_to_all_memberships:
+            entry_to_all_memberships[assignment.entry_id] = []
+        entry_to_all_memberships[assignment.entry_id].append(assignment)
+        
+        # Track primary cluster
         if assignment.is_primary or assignment.entry_id not in entry_to_cluster:
             entry_to_cluster[assignment.entry_id] = {
                 'cluster_id': assignment.cluster_id,
@@ -850,6 +885,24 @@ def get_cluster_visualization(
         else:
             cluster_name = cluster_info_map.get(cluster_id, {}).get('name', f"Cluster {cluster_id}")
         
+        # Get all memberships for this entry
+        all_memberships = []
+        for membership in sorted(
+            entry_to_all_memberships.get(entry.id, []), 
+            key=lambda x: x.membership_probability, 
+            reverse=True
+        ):
+            membership_cluster_name = (
+                "Noise" if membership.cluster_id == -1 
+                else cluster_info_map.get(membership.cluster_id, {}).get('name', f"Cluster {membership.cluster_id}")
+            )
+            all_memberships.append(ClusterMembership(
+                cluster_id=membership.cluster_id,
+                cluster_name=membership_cluster_name,
+                membership_probability=membership.membership_probability,
+                is_primary=membership.is_primary
+            ))
+        
         points.append(ClusterPoint(
             entry_id=entry.id,
             title=entry.title,
@@ -857,7 +910,8 @@ def get_cluster_visualization(
             y=float(embedding_2d[i, 1]),
             cluster_id=cluster_id,
             cluster_name=cluster_name,
-            membership_probability=assignment['probability']
+            membership_probability=assignment['probability'],
+            all_memberships=all_memberships
         ))
     
     # Build clusters list
@@ -875,6 +929,175 @@ def get_cluster_visualization(
         run_id=run_id,
         points=points,
         clusters=clusters_list
+    )
+
+
+@app.get("/clustering/entries/{entry_id}/memberships", response_model=EntryClusterMembershipsResponse)
+def get_entry_cluster_memberships(
+    entry_id: int,
+    run_id: Optional[int] = None,
+    current_user: User = Depends(require_auth),
+    db: Session = Depends(get_db)
+):
+    """
+    Get all cluster memberships for a specific entry.
+    If run_id is not provided, uses the latest clustering run.
+    """
+    # Verify the entry belongs to the user
+    entry = db.query(JournalEntry).filter(
+        JournalEntry.id == entry_id,
+        JournalEntry.user_id == current_user.id
+    ).first()
+    
+    if entry is None:
+        raise HTTPException(status_code=404, detail="Entry not found")
+    
+    # Get the clustering run
+    if run_id is None:
+        # Get latest run for this user
+        latest_run = db.query(ClusteringRun).filter(
+            ClusteringRun.user_id == current_user.id
+        ).order_by(ClusteringRun.run_timestamp.desc()).first()
+        
+        if latest_run is None:
+            raise HTTPException(status_code=404, detail="No clustering runs found for this user")
+        
+        run_id = latest_run.id
+    else:
+        # Verify the run belongs to the user
+        run = db.query(ClusteringRun).filter(
+            ClusteringRun.id == run_id,
+            ClusteringRun.user_id == current_user.id
+        ).first()
+        
+        if run is None:
+            raise HTTPException(status_code=404, detail="Clustering run not found")
+    
+    # Get all cluster assignments for this entry in this run
+    assignments = db.query(EntryClusterAssignment).filter(
+        EntryClusterAssignment.entry_id == entry_id,
+        EntryClusterAssignment.run_id == run_id
+    ).order_by(EntryClusterAssignment.membership_probability.desc()).all()
+    
+    if not assignments:
+        raise HTTPException(status_code=404, detail="No cluster assignments found for this entry")
+    
+    # Get cluster info to get names
+    clusters = db.query(Cluster).filter(
+        Cluster.run_id == run_id
+    ).all()
+    
+    cluster_info_map = {}
+    for cluster in clusters:
+        cluster_name = cluster.topic_label or f"Cluster {cluster.cluster_id}"
+        cluster_info_map[cluster.cluster_id] = cluster_name
+    
+    # Build memberships list
+    memberships = []
+    for assignment in assignments:
+        cluster_name = (
+            "Noise" if assignment.cluster_id == -1 
+            else cluster_info_map.get(assignment.cluster_id, f"Cluster {assignment.cluster_id}")
+        )
+        memberships.append(ClusterMembership(
+            cluster_id=assignment.cluster_id,
+            cluster_name=cluster_name,
+            membership_probability=assignment.membership_probability,
+            is_primary=assignment.is_primary
+        ))
+    
+    return EntryClusterMembershipsResponse(
+        entry_id=entry_id,
+        run_id=run_id,
+        memberships=memberships
+    )
+
+
+@app.get("/clustering/clusters/{cluster_id}/entries", response_model=ClusterEntriesResponse)
+def get_cluster_entries(
+    cluster_id: int,
+    run_id: Optional[int] = None,
+    current_user: User = Depends(require_auth),
+    db: Session = Depends(get_db)
+):
+    """
+    Get all entries in a specific cluster.
+    If run_id is not provided, uses the latest clustering run.
+    """
+    # Get the clustering run
+    if run_id is None:
+        # Get latest run for this user
+        latest_run = db.query(ClusteringRun).filter(
+            ClusteringRun.user_id == current_user.id
+        ).order_by(ClusteringRun.run_timestamp.desc()).first()
+        
+        if latest_run is None:
+            raise HTTPException(status_code=404, detail="No clustering runs found for this user")
+        
+        run_id = latest_run.id
+    else:
+        # Verify the run belongs to the user
+        run = db.query(ClusteringRun).filter(
+            ClusteringRun.id == run_id,
+            ClusteringRun.user_id == current_user.id
+        ).first()
+        
+        if run is None:
+            raise HTTPException(status_code=404, detail="Clustering run not found")
+    
+    # Get cluster info
+    cluster = db.query(Cluster).filter(
+        Cluster.run_id == run_id,
+        Cluster.cluster_id == cluster_id
+    ).first()
+    
+    if cluster is None:
+        raise HTTPException(status_code=404, detail="Cluster not found")
+    
+    cluster_name = cluster.topic_label or f"Cluster {cluster_id}"
+    
+    # Get all entries in this cluster
+    assignments = db.query(EntryClusterAssignment).filter(
+        EntryClusterAssignment.cluster_id == cluster_id,
+        EntryClusterAssignment.run_id == run_id
+    ).order_by(EntryClusterAssignment.membership_probability.desc()).all()
+    
+    if not assignments:
+        return ClusterEntriesResponse(
+            cluster_id=cluster_id,
+            run_id=run_id,
+            cluster_name=cluster_name,
+            entries=[]
+        )
+    
+    # Get the actual entry data
+    entry_ids = [a.entry_id for a in assignments]
+    entries = db.query(JournalEntry).filter(
+        JournalEntry.id.in_(entry_ids),
+        JournalEntry.user_id == current_user.id
+    ).all()
+    
+    entry_map = {e.id: e for e in entries}
+    
+    # Build entries list
+    entries_list = []
+    for assignment in assignments:
+        entry = entry_map.get(assignment.entry_id)
+        if entry:
+            entries_list.append(EntryClusterInfo(
+                entry_id=entry.id,
+                title=entry.title,
+                content=entry.content,
+                membership_probability=assignment.membership_probability,
+                is_primary=assignment.is_primary,
+                created_at=entry.created_at
+            ))
+    
+    return ClusterEntriesResponse(
+        cluster_id=cluster_id,
+        run_id=run_id,
+        cluster_name=cluster_name,
+        entries=entries_list
     )
 
 

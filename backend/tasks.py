@@ -32,13 +32,13 @@ def get_embedding_model():
     global _embedding_model, _models_loaded
     
     if _embedding_model is None or not _models_loaded:
-        print(f"Loading BAAI/bge-m3 model with HF_HOME={HF_HOME}...")
+        print(f"Loading ibm-granite/granite-embedding-30m-english model with HF_HOME={HF_HOME}...")
         _embedding_model = SentenceTransformer(
-            "BAAI/bge-m3",
+            "ibm-granite/granite-embedding-30m-english",
             cache_folder=HF_HOME
         )
         _models_loaded = True
-        print("BGE-M3 model loaded successfully!")
+        print("Granite-embedding-30m-english model loaded successfully!")
     
     return _embedding_model
 
@@ -88,7 +88,7 @@ def vectorize_entry(self, entry_id: int):
         # Load embedding model
         model = get_embedding_model()
         
-        # Generate embedding using BGE-M3
+        # Generate embedding using Granite-embedding-30m-english
         embedding = model.encode(entry.content, normalize_embeddings=True)
         
         # Get token count

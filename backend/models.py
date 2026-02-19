@@ -32,7 +32,7 @@ class JournalEntry(Base):
     edited_at = Column(DateTime(timezone=True), nullable=True)
     emotion = Column(String(50), nullable=True)
     emotion_score = Column(Float, nullable=True)
-    embedding = Column(Vector(1024), nullable=True)  # BGE-M3 dense embedding vector (1024 dimensions)
+    embedding = Column(Vector(384), nullable=True)  # Granite-embedding-30m-english dense embedding vector (384 dimensions)
 
     # Relationship to user
     user = relationship("User", back_populates="entries")
