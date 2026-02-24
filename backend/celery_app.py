@@ -2,6 +2,8 @@
 Celery application configuration for async task processing.
 """
 import os
+from urllib.parse import urlparse, urlunparse, parse_qs, urlencode
+
 from celery import Celery
 from env import load_root_env
 
@@ -12,6 +14,14 @@ load_root_env()
 # Default to localhost for local development, 'redis' for Docker
 if os.getenv("REDIS_URL"):
     REDIS_URL = os.getenv("REDIS_URL")
+    # rediss:// requires ssl_cert_reqs (CERT_NONE, CERT_OPTIONAL, or CERT_REQUIRED)
+    if REDIS_URL.startswith("rediss://"):
+        parsed = urlparse(REDIS_URL)
+        qs = parse_qs(parsed.query)
+        if "ssl_cert_reqs" not in qs:
+            qs["ssl_cert_reqs"] = ["none"]  # CERT_NONE; use "required" for strict validation
+            new_query = urlencode(qs, doseq=True)
+            REDIS_URL = urlunparse(parsed._replace(query=new_query))
     print(f"Celery Redis URL (from env): {REDIS_URL}")
 else:
     # Check if we're in Docker by looking for common Docker environment indicators

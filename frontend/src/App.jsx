@@ -1,12 +1,11 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 
 // Prefer Vite env; fall back based on environment
-// In production (Render), use the backend URL directly
-// In development, use localhost
+// In production (Fly), use the Fly API URL; in development, use localhost
 const API_URL = import.meta.env.VITE_API_URL || (
   window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
     ? 'http://localhost:8000'
-    : 'https://reflectai-jhwv.onrender.com'
+    : 'https://reflectai-api-icy-dust-4243.fly.dev'
 )
 const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID || ''
 
@@ -40,13 +39,13 @@ function App() {
   const [clusteringTaskId, setClusteringTaskId] = useState(null)
   const [clusteringTaskStatus, setClusteringTaskStatus] = useState(null)
   
-  // Clustering parameters
-  const [minClusterSize, setMinClusterSize] = useState(5)
-  const [minSamples, setMinSamples] = useState(2)
-  const [membershipThreshold, setMembershipThreshold] = useState(0.1)
+  // Clustering parameters - optimized for many fine-grained clusters
+  const [minClusterSize, setMinClusterSize] = useState(2)  // Reduced to 2 for more clusters
+  const [minSamples, setMinSamples] = useState(1)
+  const [membershipThreshold, setMembershipThreshold] = useState(0.05)
   const [clusterSelectionEpsilon, setClusterSelectionEpsilon] = useState(0.0)
-  const [umapNComponents, setUmapNComponents] = useState(10)
-  const [umapNNeighbors, setUmapNNeighbors] = useState(15)
+  const [umapNComponents, setUmapNComponents] = useState(5)  // Reduced to 5 for more structure
+  const [umapNNeighbors, setUmapNNeighbors] = useState(8)  // Reduced to 8 for more local clusters
   const [umapMinDist, setUmapMinDist] = useState(0.0)
   
   // Auth state

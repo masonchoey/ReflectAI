@@ -1,17 +1,17 @@
 """
 Celery tasks for async processing of journal entries.
+Models (SentenceTransformer, hdbscan_clustering) are lazy-loaded on first use
+to keep worker startup fast and memory low.
 """
 import os
 from celery import Task
 from sqlalchemy.orm import Session
-from sentence_transformers import SentenceTransformer
 import numpy as np
 from datetime import datetime, timezone
 from typing import Optional
 from database import SessionLocal
 from models import JournalEntry
 from celery_app import celery_app
-from hdbscan_clustering import run_clustering
 
 # Model state - loaded lazily on first use
 _embedding_model = None
@@ -28,10 +28,11 @@ os.makedirs(HF_HOME, exist_ok=True)
 
 
 def get_embedding_model():
-    """Get or load the embedding model."""
+    """Get or load the embedding model (lazy load on first use)."""
     global _embedding_model, _models_loaded
-    
+
     if _embedding_model is None or not _models_loaded:
+        from sentence_transformers import SentenceTransformer
         print(f"Loading ibm-granite/granite-embedding-30m-english model with HF_HOME={HF_HOME}...")
         _embedding_model = SentenceTransformer(
             "ibm-granite/granite-embedding-30m-english",
@@ -39,7 +40,7 @@ def get_embedding_model():
         )
         _models_loaded = True
         print("Granite-embedding-30m-english model loaded successfully!")
-    
+
     return _embedding_model
 
 
@@ -238,8 +239,11 @@ def run_clustering_task(
     print(f"  umap_n_neighbors: {umap_n_neighbors}")
     print(f"  umap_min_dist: {umap_min_dist}")
     print("="*60 + "\n")
-    
+
     try:
+        # Lazy import to avoid loading HDBSCAN/UMAP/transformers at worker startup
+        from hdbscan_clustering import run_clustering
+
         # Parse date strings to datetime objects if provided
         start_dt = None
         end_dt = None
@@ -247,7 +251,7 @@ def run_clustering_task(
             start_dt = datetime.fromisoformat(start_date.replace('Z', '+00:00'))
         if end_date:
             end_dt = datetime.fromisoformat(end_date.replace('Z', '+00:00'))
-        
+
         # Run clustering (this will save the run to the database)
         run_clustering(
             user_id=user_id,

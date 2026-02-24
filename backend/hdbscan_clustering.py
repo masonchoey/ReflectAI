@@ -357,7 +357,8 @@ Topic title:"""
                 label = full_output[len(input_text):].strip()
 
             # Clean up the label
-            label = label.split("\n")[1].strip()  # Take only second line (get rid of first line which is "assistant")
+            label = label.split("\n")[1:]  # Take only second line (get rid of first line which is "assistant")
+            label = " ".join(label)
             label = label.strip('.,!?;:"\'')  # Remove punctuation
             #remove the string "The Common Theme is:", if it exists
             if "The Common Theme is:" in label:
@@ -419,39 +420,43 @@ class JournalClusterer:
     
     def __init__(
         self,
-        min_cluster_size: int = 5,
-        min_samples: int = 2,
-        membership_threshold: float = 0.1,
+        min_cluster_size: int = 2,  # Reduced to 2 - allow very small, specific clusters
+        min_samples: int = 1,  # Very permissive for multi-label
+        membership_threshold: float = 0.05,  # Low threshold for more multi-label assignments
         cluster_selection_epsilon: float = 0.0,
         metric: str = 'euclidean',
-        cluster_selection_method: str = 'leaf',
+        cluster_selection_method: str = 'leaf',  # Changed back to 'leaf' - creates MORE fine-grained clusters
         use_umap: bool = True,
-        umap_n_components: int = 10,
-        umap_n_neighbors: int = 15,
+        umap_n_components: int = 5,  # Reduced from 10 - preserves more structure = more clusters
+        umap_n_neighbors: int = 8,  # Reduced from 15 - smaller neighborhoods = more local clusters
         umap_min_dist: float = 0.0,
-        umap_metric: str = 'cosine'
+        umap_metric: str = 'cosine',
+        assign_noise: bool = True  # Assign noise points to nearest cluster
     ):
         """
         Initialize the clusterer.
         
         Args:
             min_cluster_size: Minimum number of points to form a cluster.
-                             For journal entries, 3-5 works well since themes may be specific.
-            min_samples: Minimum samples in a neighborhood. Lower values (1-2) allow more 
-                        points to be considered core points. Default: 2.
+                             For journal entries, 2 allows for very specific, granular clusters.
+            min_samples: Minimum samples in a neighborhood. Use 1 for very permissive 
+                        multi-label clustering. Default: 1.
             membership_threshold: Minimum probability to assign an entry to a cluster.
-                                 Lower values (0.05-0.1) allow more multi-cluster assignments.
+                                 Lower values (0.05) allow more multi-label assignments.
             cluster_selection_epsilon: Distance threshold for cluster merging. 
-                                      Use 0.0 to disable merging (recommended).
+                                      Use 0.0 to disable merging.
             metric: Distance metric for HDBSCAN.
-            cluster_selection_method: 'leaf' for fine-grained clusters, 'eom' for larger clusters.
-                                     'leaf' is recommended for journal entries.
+            cluster_selection_method: 'leaf' for fine-grained, specific clusters (creates MORE clusters).
+                                     'eom' for broader, merged clusters (creates FEWER clusters).
             use_umap: Whether to use UMAP dimensionality reduction before clustering.
                      Highly recommended for high-dimensional embeddings (default: True).
-            umap_n_components: Number of dimensions to reduce to (default: 10).
-            umap_n_neighbors: UMAP neighborhood size (default: 15).
+            umap_n_components: Number of dimensions to reduce to. Lower = more structure preserved = more clusters.
+                              (default: 5).
+            umap_n_neighbors: UMAP neighborhood size. Smaller = more local clusters (default: 8).
             umap_min_dist: UMAP minimum distance, 0.0 allows tighter clusters (default: 0.0).
             umap_metric: UMAP distance metric, 'cosine' works well for text (default: 'cosine').
+            assign_noise: Whether to assign noise points to their nearest cluster (default: True).
+                         Ensures all entries get at least one category.
         """
         self.min_cluster_size = min_cluster_size
         self.min_samples = min_samples
@@ -464,6 +469,7 @@ class JournalClusterer:
         self.umap_n_neighbors = umap_n_neighbors
         self.umap_min_dist = umap_min_dist
         self.umap_metric = umap_metric
+        self.assign_noise = assign_noise  # Store the new parameter
         self.clusterer = None
         self.soft_clusters = None
         self.umap_reducer = None
@@ -521,8 +527,13 @@ class JournalClusterer:
         print("Computing soft cluster memberships...")
         self.soft_clusters = hdbscan.all_points_membership_vectors(self.clusterer)
         
+        # Optionally assign noise points to nearest cluster
+        if self.assign_noise:
+            labels = self._assign_noise_to_clusters(clustering_data)
+        else:
+            labels = self.clusterer.labels_
+        
         # Summary statistics
-        labels = self.clusterer.labels_
         n_clusters = len(set(labels)) - (1 if -1 in labels else 0)
         n_noise = list(labels).count(-1)
         n_clustered = len(labels) - n_noise
@@ -532,6 +543,51 @@ class JournalClusterer:
         print(f"Noise points: {n_noise} ({100*n_noise/len(labels):.1f}%)")
         
         return self
+    
+    def _assign_noise_to_clusters(self, embeddings: np.ndarray) -> np.ndarray:
+        """
+        Assign noise points to their nearest cluster based on soft membership.
+        
+        This ensures all entries get at least one category assignment, which is
+        useful for journal entries where "noise" doesn't mean "meaningless".
+        
+        Args:
+            embeddings: The embeddings used for clustering (could be UMAP-reduced)
+        
+        Returns:
+            Updated labels array with noise points reassigned
+        """
+        labels = self.clusterer.labels_.copy()
+        n_noise_original = (labels == -1).sum()
+        
+        if n_noise_original == 0:
+            return labels
+        
+        print(f"Assigning {n_noise_original} noise points to nearest clusters...")
+        
+        # For each noise point, assign to cluster with highest membership
+        for i, label in enumerate(labels):
+            if label == -1:  # Noise point
+                memberships = self.soft_clusters[i]
+                
+                # Handle scalar case
+                if np.isscalar(memberships):
+                    continue  # Can't assign, no cluster memberships
+                
+                # Find cluster with highest membership
+                if len(memberships) > 0:
+                    max_cluster = int(np.argmax(memberships))
+                    max_prob = memberships[max_cluster]
+                    
+                    # Only assign if membership is above a low threshold
+                    if max_prob >= 0.01:  # Very low threshold for noise assignment
+                        labels[i] = max_cluster
+        
+        n_noise_after = (labels == -1).sum()
+        n_reassigned = n_noise_original - n_noise_after
+        print(f"Reassigned {n_reassigned} noise points ({100*n_reassigned/n_noise_original:.1f}%)")
+        
+        return labels
     
     def get_hard_labels(self) -> np.ndarray:
         """Get hard cluster assignments (single cluster per point)."""
@@ -553,6 +609,9 @@ class JournalClusterer:
         """
         Get multiple cluster assignments per entry based on membership threshold.
         
+        Primary cluster is determined by HIGHEST soft membership probability,
+        not by HDBSCAN's hard labels (which can disagree with probabilities).
+        
         Args:
             entry_indices: Indices into the embeddings array
             entry_ids: Database IDs of the entries
@@ -564,28 +623,34 @@ class JournalClusterer:
             raise ValueError("Must call fit() first")
         
         assignments = []
-        hard_labels = self.clusterer.labels_
         
         for idx, entry_id in zip(entry_indices, entry_ids):
             memberships = self.soft_clusters[idx]
-            primary_cluster = int(hard_labels[idx])  # Convert numpy.int64 to Python int
             
             # Handle case where memberships is a scalar (single cluster or no clusters)
             if np.isscalar(memberships):
                 memberships = np.array([memberships])
             
+            # Find primary cluster: the one with HIGHEST membership probability
+            if len(memberships) > 0 and memberships.max() >= self.membership_threshold:
+                primary_cluster = int(np.argmax(memberships))
+            else:
+                primary_cluster = -1  # No strong cluster membership
+            
             # Get all clusters above threshold
+            has_assignment = False
             for cluster_id, prob in enumerate(memberships):
                 if prob >= self.membership_threshold:
                     assignments.append(ClusterAssignment(
                         entry_id=entry_id,
-                        cluster_id=int(cluster_id),  # Convert to Python int
+                        cluster_id=int(cluster_id),
                         membership_probability=float(prob),
                         is_primary=(int(cluster_id) == primary_cluster)
                     ))
+                    has_assignment = True
             
-            # If noise point (label=-1), still record it with special cluster_id
-            if primary_cluster == -1:
+            # If no assignment above threshold, still mark as noise
+            if not has_assignment:
                 assignments.append(ClusterAssignment(
                     entry_id=entry_id,
                     cluster_id=-1,  # Noise cluster
@@ -752,12 +817,13 @@ def run_clustering(
     membership_threshold: Optional[float] = None,
     cluster_selection_epsilon: Optional[float] = None,
     metric: str = 'euclidean',
-    cluster_selection_method: str = 'leaf',
+    cluster_selection_method: str = 'leaf',  # Changed back to 'leaf' for MORE clusters
     use_umap: bool = True,
-    umap_n_components: int = 10,
+    umap_n_components: int = 5,  # Reduced from 10
     umap_n_neighbors: Optional[int] = None,
     umap_min_dist: Optional[float] = None,
     umap_metric: str = 'cosine',
+    assign_noise: bool = True,  # New parameter
     generate_topics: bool = False,
     topic_model: str = "HuggingFaceTB/SmolLM2-135M-Instruct",
     metadata_db: Optional[str] = None,
@@ -772,23 +838,28 @@ def run_clustering(
     
     Embeddings must be pre-generated using embeddings.py.
     
-    Recommended settings for journal entries:
-    - use_umap=True with n_components=10 (significantly improves clustering)
-    - cluster_selection_method='leaf' for fine-grained thematic clusters
-    - min_samples=2 to allow more points to be clustered
-    - cluster_selection_epsilon=0.0 to disable automatic cluster merging
+    Recommended settings for many fine-grained, specific clusters:
+    - min_cluster_size=2 (very small clusters allowed)
+    - min_samples=1 (very permissive)
+    - membership_threshold=0.05 (low threshold for multi-label)
+    - cluster_selection_method='leaf' (fine-grained, specific clusters)
+    - umap_n_components=5 (preserve more structure)
+    - umap_n_neighbors=8 (smaller neighborhoods)
+    - assign_noise=True (ensure all entries get categories)
     
     Args:
         user_id: User ID to cluster entries for
-        min_cluster_size: Minimum cluster size (default: 5)
-        min_samples: Minimum samples in neighborhood (default: 2)
-        membership_threshold: Minimum probability for soft assignment (default: 0.1)
+        min_cluster_size: Minimum cluster size (default: 2)
+        min_samples: Minimum samples in neighborhood (default: 1)
+        membership_threshold: Minimum probability for soft assignment (default: 0.05)
         cluster_selection_epsilon: Distance for cluster merging (default: 0.0)
         metric: Distance metric for HDBSCAN (default: 'euclidean')
-        cluster_selection_method: 'leaf' for fine-grained, 'eom' for larger clusters
+        cluster_selection_method: 'leaf' for MORE fine-grained clusters, 'eom' for FEWER broad clusters
         use_umap: Whether to use UMAP dimensionality reduction (default: True)
-        umap_n_components: UMAP output dimensions (default: 10)
+        umap_n_components: UMAP output dimensions - lower = more clusters (default: 5)
+        umap_n_neighbors: UMAP neighbors - lower = more clusters (default: 8)
         umap_metric: UMAP distance metric (default: 'cosine')
+        assign_noise: Whether to assign noise points to nearest cluster (default: True)
         generate_topics: Whether to generate topic labels using SmolLM2 (default: False)
         topic_model: Hugging Face model name for topic labeling (default: "HuggingFaceTB/SmolLM2-135M-Instruct")
         metadata_db: Deprecated - metadata is now stored in PostgreSQL
@@ -874,13 +945,13 @@ def run_clustering(
         print(f"  Medium (50-200 words): {length_stats['medium_entries']}")
         print(f"  Short (<50 words): {length_stats['short_entries']}")
         
-        # Set final parameters with sensible defaults
-        final_min_cluster_size = min_cluster_size if min_cluster_size is not None else 5
-        final_min_samples = min_samples if min_samples is not None else 2
-        final_membership_threshold = membership_threshold if membership_threshold is not None else 0.1
+        # Set final parameters with sensible defaults for many fine-grained clusters
+        final_min_cluster_size = min_cluster_size if min_cluster_size is not None else 2
+        final_min_samples = min_samples if min_samples is not None else 1
+        final_membership_threshold = membership_threshold if membership_threshold is not None else 0.05
         final_cluster_selection_epsilon = cluster_selection_epsilon if cluster_selection_epsilon is not None else 0.0
-        final_umap_n_components = umap_n_components if umap_n_components is not None else 10
-        final_umap_n_neighbors = umap_n_neighbors if umap_n_neighbors is not None else 15
+        final_umap_n_components = umap_n_components if umap_n_components is not None else 5
+        final_umap_n_neighbors = umap_n_neighbors if umap_n_neighbors is not None else 8
         final_umap_min_dist = umap_min_dist if umap_min_dist is not None else 0.0
         final_metric = metric
         
@@ -891,6 +962,7 @@ def run_clustering(
         print(f"cluster_selection_epsilon: {final_cluster_selection_epsilon}")
         print(f"cluster_selection_method: {cluster_selection_method}")
         print(f"metric: {final_metric}")
+        print(f"assign_noise: {assign_noise}")
         print(f"use_umap: {use_umap}")
         if use_umap:
             print(f"umap_n_components: {final_umap_n_components}")
@@ -911,7 +983,8 @@ def run_clustering(
             umap_n_components=final_umap_n_components,
             umap_n_neighbors=final_umap_n_neighbors,
             umap_min_dist=final_umap_min_dist,
-            umap_metric=umap_metric
+            umap_metric=umap_metric,
+            assign_noise=assign_noise
         )
         
         clusterer.fit(embeddings)
@@ -1287,38 +1360,38 @@ if __name__ == "__main__":
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Run with recommended defaults (UMAP + leaf selection)
+  # Run with recommended defaults for many fine-grained clusters
   python hdbscan_clustering.py --user-id 1 --visualize
 
   # Generate topic labels using SmolLM2
   python hdbscan_clustering.py --user-id 1 --generate-topics
 
-  # Fine-tune for more/fewer clusters
-  python hdbscan_clustering.py --min-cluster-size 3 --min-samples 1  # More clusters
-  python hdbscan_clustering.py --min-cluster-size 8 --min-samples 3  # Fewer clusters
+  # Even MORE clusters (very specific, granular themes)
+  python hdbscan_clustering.py --min-cluster-size 2 --umap-components 3 --umap-neighbors 5
+
+  # FEWER clusters (broader themes) - use EOM selection
+  python hdbscan_clustering.py --min-cluster-size 5 --cluster-selection-method eom
 
   # Disable UMAP (not recommended for high-dim embeddings)
   python hdbscan_clustering.py --no-umap
-
-  # Use EOM selection for larger, broader clusters
-  python hdbscan_clustering.py --cluster-selection-method eom
         """
     )
     parser.add_argument("--user-id", type=int, default=1, help="User ID to cluster")
     parser.add_argument("--limit", type=int, default=0, help="Maximum number of entries (0=all)")
     
-    # HDBSCAN parameters
-    parser.add_argument("--min-cluster-size", type=int, default=5, help="Minimum cluster size (default: 5)")
-    parser.add_argument("--min-samples", type=int, default=2, help="Minimum samples in neighborhood (default: 2)")
-    parser.add_argument("--membership-threshold", type=float, default=0.1, help="Soft membership threshold (default: 0.1)")
+    # HDBSCAN parameters - optimized for many fine-grained clusters
+    parser.add_argument("--min-cluster-size", type=int, default=2, help="Minimum cluster size (default: 2)")
+    parser.add_argument("--min-samples", type=int, default=1, help="Minimum samples in neighborhood (default: 1)")
+    parser.add_argument("--membership-threshold", type=float, default=0.05, help="Soft membership threshold (default: 0.05)")
     parser.add_argument("--cluster-selection-epsilon", type=float, default=0.0, help="Cluster merging distance (default: 0.0)")
     parser.add_argument("--cluster-selection-method", type=str, default="leaf", choices=["leaf", "eom"],
-                       help="Cluster selection: 'leaf' (fine-grained) or 'eom' (larger) (default: leaf)")
+                       help="Cluster selection: 'leaf' (fine-grained, MORE clusters) or 'eom' (broad, FEWER clusters) (default: leaf)")
     parser.add_argument("--metric", type=str, default="euclidean", help="HDBSCAN distance metric (default: euclidean)")
     
     # UMAP parameters
     parser.add_argument("--no-umap", action="store_true", help="Disable UMAP dimensionality reduction")
-    parser.add_argument("--umap-components", type=int, default=10, help="UMAP output dimensions (default: 10)")
+    parser.add_argument("--umap-components", type=int, default=5, help="UMAP output dimensions - lower = more clusters (default: 5)")
+    parser.add_argument("--umap-neighbors", type=int, default=8, help="UMAP neighbors - lower = more clusters (default: 8)")
     parser.add_argument("--umap-metric", type=str, default="cosine", help="UMAP distance metric (default: cosine)")
     
     # Topic generation parameters
