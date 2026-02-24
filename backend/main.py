@@ -7,8 +7,6 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
 from typing import List, Optional
 from datetime import datetime, timezone, timedelta
-from transformers import pipeline
-from sentence_transformers import SentenceTransformer
 import numpy as np
 from google.oauth2 import id_token
 from google.auth.transport import requests as google_requests
@@ -69,7 +67,11 @@ def load_models():
     # If models are already loaded, do nothing
     if models_loaded and emotion_classifier is not None and embedding_model is not None:
         return
-    
+
+    # Lazy imports so app can bind to port before loading heavy ML libs (fixes Fly.io startup)
+    from transformers import pipeline
+    from sentence_transformers import SentenceTransformer
+
     print(f"Loading models with HF_HOME={HF_HOME}...")
     
     print("Loading SamLowe/roberta-base-go_emotions model...")
@@ -146,7 +148,7 @@ app = FastAPI(title="ReflectAI Journal API", lifespan=lifespan)
 
 # CORS configuration - allow both local development and production
 # Accept comma-separated list of origins from environment variable
-CORS_ORIGINS_STR = os.getenv("CORS_ORIGINS", "http://localhost:5173,http://localhost:3000,http://localhost")
+CORS_ORIGINS_STR = os.getenv("CORS_ORIGINS", "http://localhost:5173,http://localhost:3000,http://localhost,https://reflect-ai-nine.vercel.app,https://reflect-ai-nine-*.vercel.app")
 # Split and strip whitespace from each origin
 CORS_ORIGINS = [origin.strip() for origin in CORS_ORIGINS_STR.split(",") if origin.strip()]
 

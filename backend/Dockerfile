@@ -28,8 +28,8 @@ COPY . .
 # Create cache directory with proper permissions
 RUN mkdir -p ${HF_HOME} && chmod 777 ${HF_HOME}
 
-# Expose port
+# Expose port (Fly sets PORT to match internal_port; default 8000 for local)
 EXPOSE 8000
 
-# Run the application with eager loading
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Run the application: bind to 0.0.0.0 so Fly proxy can reach it; use PORT if set (e.g. by Fly)
+CMD ["sh", "-c", "exec uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}"]

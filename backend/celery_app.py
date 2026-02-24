@@ -53,4 +53,8 @@ celery_app.conf.update(
     broker_connection_retry_on_startup=True,  # Retry connection on startup
     broker_connection_retry=True,  # Enable connection retries
     broker_connection_max_retries=10,  # Maximum retry attempts
+    broker_transport_options={
+        "visibility_timeout": 3600,
+        "polling_interval": 5,  # seconds between polls
+    },
 )
