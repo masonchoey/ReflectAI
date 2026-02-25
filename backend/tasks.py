@@ -241,6 +241,11 @@ def run_clustering_task(
     print("="*60 + "\n")
 
     try:
+        # Ensure backend dir is on path so lazy import works (worker may run from project root or /app)
+        import sys
+        _backend_dir = os.path.dirname(os.path.abspath(__file__))
+        if _backend_dir not in sys.path:
+            sys.path.insert(0, _backend_dir)
         # Lazy import to avoid loading HDBSCAN/UMAP/transformers at worker startup
         from hdbscan_clustering import run_clustering
 

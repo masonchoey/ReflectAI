@@ -122,6 +122,9 @@ async def lifespan(app: FastAPI):
             print(f"Warning: Failed to create database tables: {e}")
             break
     
+    # Wake the Celery worker immediately on startup so it's ready for tasks
+    ensure_worker_running()
+
     # Check if model preloading is enabled (default: True for local development)
     # Set ENABLE_MODEL_PRELOAD=false in production to disable
     enable_preload = os.getenv("ENABLE_MODEL_PRELOAD", "true").lower() in ("true", "1", "yes")

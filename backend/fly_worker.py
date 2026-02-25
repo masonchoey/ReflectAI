@@ -24,6 +24,7 @@ def ensure_worker_running() -> None:
     thread so the HTTP response is not blocked.
     """
     if not FLY_API_TOKEN or not FLY_WORKER_APP:
+        logger.warning("FLY_API_TOKEN or FLY_WORKER_APP not set; cannot scale worker")
         return
     threading.Thread(target=_scale_worker_up, daemon=True).start()
 
