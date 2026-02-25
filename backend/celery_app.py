@@ -55,6 +55,6 @@ celery_app.conf.update(
     broker_connection_max_retries=10,  # Maximum retry attempts
     broker_transport_options={
         "visibility_timeout": 3600,
-        "polling_interval": 5,  # seconds between polls
+        "polling_interval": 30,  # seconds between polls (reduces Redis usage)
     },
 )

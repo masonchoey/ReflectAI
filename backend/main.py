@@ -28,6 +28,7 @@ from schemas import (
 from tasks import vectorize_entry, vectorize_all_entries, run_clustering_task
 from celery.result import AsyncResult
 from celery_app import celery_app
+from fly_worker import ensure_worker_running
 
 load_root_env()
 
@@ -398,6 +399,7 @@ def create_entry(
     # Queue vectorization task asynchronously
     try:
         task = vectorize_entry.delay(db_entry.id)
+        ensure_worker_running()
         print(f"Queued vectorization task {task.id} for entry {db_entry.id}")
     except Exception as e:
         print(f"Warning: Failed to queue vectorization task: {e}")
@@ -456,6 +458,7 @@ def update_entry(
     # Queue vectorization task asynchronously to regenerate embedding
     try:
         task = vectorize_entry.delay(entry_id)
+        ensure_worker_running()
         print(f"Queued vectorization task {task.id} for entry {entry_id}")
     except Exception as e:
         print(f"Warning: Failed to queue vectorization task: {e}")
@@ -562,7 +565,8 @@ def embed_entry(
     
     # Queue vectorization task
     task = vectorize_entry.delay(entry_id)
-    
+    ensure_worker_running()
+
     return TaskStatusResponse(
         task_id=task.id,
         status=task.state,
@@ -578,7 +582,8 @@ def embed_all_entries(
     """Queue embedding generation for all user's entries that don't have one."""
     # Queue vectorization task for all entries
     task = vectorize_all_entries.delay(current_user.id)
-    
+    ensure_worker_running()
+
     return TaskStatusResponse(
         task_id=task.id,
         status=task.state,
@@ -737,7 +742,8 @@ def create_clustering_run(
             umap_n_neighbors=request.umap_n_neighbors,
             umap_min_dist=request.umap_min_dist
         )
-        
+        ensure_worker_running()
+
         return TaskStatusResponse(
             task_id=task.id,
             status=task.state,

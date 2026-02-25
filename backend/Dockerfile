@@ -14,7 +14,11 @@ RUN apt-get update && apt-get install -y \
     gcc \
     g++ \
     postgresql-client \
+    curl \
     && rm -rf /var/lib/apt/lists/*
+
+# Install flyctl for scaling worker from 0 when API enqueues tasks
+RUN curl -L https://fly.io/install.sh | sh && mv /root/.fly/bin/flyctl /usr/local/bin/
 
 # Copy requirements first for better caching
 COPY requirements.txt .
