@@ -36,3 +36,9 @@ jobs:
         working-directory: backend
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN_WORKER }}
+
+      - name: Scale Celery worker to 1 machine
+        run: flyctl scale count 1 --config fly.worker.toml --yes
+        working-directory: backend
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN_WORKER }}
