@@ -10,13 +10,23 @@ primary_region = 'lax'
   dockerfile = 'Dockerfile.worker'
 
 [env]
-  HF_DATASETS_CACHE = '/tmp/.cache/huggingface'
-  HF_HOME = '/tmp/.cache/huggingface'
-  TRANSFORMERS_CACHE = '/tmp/.cache/huggingface'
+  HF_DATASETS_CACHE = '/data/huggingface'
+  HF_HOME = '/data/huggingface'
+  TRANSFORMERS_CACHE = '/data/huggingface'
   auto_stop_machines = 'true'
 
+# Persistent volume for ML model weights:
+#   - ibm-granite/granite-embedding-30m-english (~120 MB)
+#   - SamLowe/roberta-base-go_emotions (~500 MB)
+#   - HuggingFaceTB/SmolLM2-135M-Instruct (~270 MB)
+# Create once: fly volumes create reflectai_worker_models --size 3 --region lax -a reflectai-worker
+[[mounts]]
+  source = 'reflectai_worker_models'
+  destination = '/data/huggingface'
+  initial_size = '3gb'
+
 [[vm]]
-  memory = '1gb'
+  memory = '2gb'
   cpu_kind = 'shared'
   cpus = 1
-  memory_mb = 1024
+  memory_mb = 2048

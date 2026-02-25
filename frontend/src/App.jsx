@@ -502,33 +502,50 @@ function App() {
           handleSignOut()
           return
         }
-        throw new Error('Failed to analyze emotion')
+        throw new Error('Failed to queue emotion analysis')
       }
-      const result = await response.json()
-      
-      // Update the entry with the emotion data
-      setEntries(prevEntries => prevEntries.map(entry => 
-        entry.id === entryId 
-          ? { ...entry, emotion: result.emotion, emotion_score: result.emotion_score }
-          : entry
-      ))
-      
-      // Store the full emotion results for display
-      setEmotionResults(prev => ({
-        ...prev,
-        [entryId]: result.all_emotions
-      }))
+      const taskData = await response.json()
+      const taskId = taskData.task_id
 
-      // Automatically expand the breakdown once it's available
-      setExpandedEmotionEntries(prev => ({
-        ...prev,
-        [entryId]: true
-      }))
-      
-      setError(null)
+      // Poll for task completion
+      const poll = async () => {
+        try {
+          const statusRes = await fetch(`${API_URL}/tasks/${taskId}`, {
+            headers: getAuthHeaders()
+          })
+          if (!statusRes.ok) {
+            if (statusRes.status === 401) { handleSignOut(); return }
+            throw new Error('Failed to fetch task status')
+          }
+          const status = await statusRes.json()
+
+          if (status.status === 'SUCCESS' && status.result) {
+            const result = status.result
+            setEntries(prevEntries => prevEntries.map(entry =>
+              entry.id === entryId
+                ? { ...entry, emotion: result.emotion, emotion_score: result.emotion_score }
+                : entry
+            ))
+            setEmotionResults(prev => ({ ...prev, [entryId]: result.all_emotions }))
+            setExpandedEmotionEntries(prev => ({ ...prev, [entryId]: true }))
+            setError(null)
+            setAnalyzingId(null)
+          } else if (status.status === 'FAILURE' || status.status === 'REVOKED') {
+            throw new Error(status.error || 'Emotion analysis task failed')
+          } else {
+            // Still PENDING or STARTED — keep polling
+            setTimeout(poll, 2000)
+          }
+        } catch (err) {
+          setError('Could not analyze emotion. Please try again.')
+          setAnalyzingId(null)
+        }
+      }
+
+      // Start polling after a short initial delay
+      setTimeout(poll, 1000)
     } catch (err) {
       setError('Could not analyze emotion. Please try again.')
-    } finally {
       setAnalyzingId(null)
     }
   }

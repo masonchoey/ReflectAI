@@ -1,7 +1,7 @@
 """
 Celery tasks for async processing of journal entries.
-Models (SentenceTransformer, hdbscan_clustering) are lazy-loaded on first use
-to keep worker startup fast and memory low.
+Models (SentenceTransformer, emotion classifier, hdbscan_clustering) are lazy-loaded
+on first use to keep worker startup fast and memory low.
 """
 import os
 from celery import Task
@@ -16,6 +16,7 @@ from celery_app import celery_app
 # Model state - loaded lazily on first use
 _embedding_model = None
 _models_loaded = False
+_emotion_classifier = None
 
 # Configure Hugging Face cache directory
 HF_HOME = os.getenv("HF_HOME", os.path.expanduser("~/.cache/huggingface"))
@@ -42,6 +43,24 @@ def get_embedding_model():
         print("Granite-embedding-30m-english model loaded successfully!")
 
     return _embedding_model
+
+
+def get_emotion_classifier():
+    """Get or load the emotion classifier (lazy load on first use)."""
+    global _emotion_classifier
+
+    if _emotion_classifier is None:
+        from transformers import pipeline
+        print(f"Loading SamLowe/roberta-base-go_emotions model with HF_HOME={HF_HOME}...")
+        _emotion_classifier = pipeline(
+            "text-classification",
+            model="SamLowe/roberta-base-go_emotions",
+            top_k=None,
+            cache_dir=HF_HOME
+        )
+        print("Emotion classifier loaded successfully!")
+
+    return _emotion_classifier
 
 
 class DatabaseTask(Task):
@@ -301,4 +320,179 @@ def run_clustering_task(
             "status": "error",
             "user_id": user_id,
             "message": f"Error running clustering: {str(e)}"
+        }
+
+
+@celery_app.task(base=DatabaseTask, bind=True, name="tasks.analyze_emotion")
+def analyze_emotion_task(self, entry_id: int):
+    """
+    Analyze emotions in a journal entry and persist the result to the database.
+
+    Args:
+        entry_id: The ID of the journal entry to analyze.
+
+    Returns:
+        dict with keys: status, entry_id, emotion, emotion_score, all_emotions (top 5).
+    """
+    db: Session = None
+    try:
+        db = self.db
+
+        entry = db.query(JournalEntry).filter(JournalEntry.id == entry_id).first()
+        if entry is None:
+            return {
+                "status": "error",
+                "entry_id": entry_id,
+                "message": "Entry not found",
+            }
+
+        classifier = get_emotion_classifier()
+
+        # Model has a 512-token context window
+        text = entry.content[:512]
+        results = classifier(text)[0]
+
+        sorted_results = sorted(results, key=lambda x: x["score"], reverse=True)
+        top_emotion = sorted_results[0]
+
+        entry.emotion = top_emotion["label"]
+        entry.emotion_score = top_emotion["score"]
+        db.commit()
+        db.refresh(entry)
+
+        all_emotions = [
+            {"label": r["label"], "score": r["score"]} for r in sorted_results[:5]
+        ]
+
+        return {
+            "status": "success",
+            "entry_id": entry.id,
+            "emotion": top_emotion["label"],
+            "emotion_score": top_emotion["score"],
+            "all_emotions": all_emotions,
+        }
+    except Exception as e:
+        if db is not None:
+            db.rollback()
+        return {
+            "status": "error",
+            "entry_id": entry_id,
+            "message": f"Error analyzing emotion: {str(e)}",
+        }
+
+
+def _cosine_similarity(vec1, vec2):
+    """Compute cosine similarity between two vectors (lists or arrays)."""
+    a = np.array(vec1, dtype=np.float64)
+    b = np.array(vec2, dtype=np.float64)
+    norm_a = np.linalg.norm(a)
+    norm_b = np.linalg.norm(b)
+    if norm_a == 0 or norm_b == 0:
+        return 0.0
+    return float(np.dot(a, b) / (norm_a * norm_b))
+
+
+@celery_app.task(base=DatabaseTask, bind=True, name="tasks.tokenize_entry")
+def tokenize_entry_task(self, entry_id: int):
+    """
+    Tokenize a journal entry using the embedding model's tokenizer.
+
+    Args:
+        entry_id: The ID of the journal entry to tokenize.
+
+    Returns:
+        dict: entry_id, text, token_count, tokens, token_ids (same shape as TokenizationResponse).
+    """
+    db: Session = None
+    try:
+        db = self.db
+        entry = db.query(JournalEntry).filter(JournalEntry.id == entry_id).first()
+        if entry is None:
+            return {"status": "error", "entry_id": entry_id, "message": "Entry not found"}
+
+        model = get_embedding_model()
+        tokenizer = model.tokenizer
+        encoded = tokenizer.encode_plus(
+            entry.content,
+            add_special_tokens=True,
+            return_tensors=None,
+        )
+        token_ids = encoded["input_ids"]
+        tokens = tokenizer.convert_ids_to_tokens(token_ids)
+
+        return {
+            "status": "success",
+            "entry_id": entry.id,
+            "text": entry.content,
+            "token_count": len(tokens),
+            "tokens": tokens,
+            "token_ids": token_ids,
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "entry_id": entry_id,
+            "message": f"Error tokenizing entry: {str(e)}",
+        }
+
+
+@celery_app.task(base=DatabaseTask, bind=True, name="tasks.semantic_search")
+def semantic_search_task(self, user_id: int, query: str, top_k: int = 5):
+    """
+    Encode the search query and find the most similar journal entries for the user.
+
+    Args:
+        user_id: The user whose entries to search.
+        query: Search query text.
+        top_k: Maximum number of results to return.
+
+    Returns:
+        dict: query, results (list of {id, title, content, similarity_score, created_at, emotion}).
+    """
+    db: Session = None
+    try:
+        db = self.db
+        model = get_embedding_model()
+        query_embedding = model.encode(query, normalize_embeddings=True)
+        query_emb_list = (
+            query_embedding.tolist()
+            if hasattr(query_embedding, "tolist")
+            else list(query_embedding)
+        )
+
+        entries = db.query(JournalEntry).filter(
+            JournalEntry.user_id == user_id,
+            JournalEntry.embedding != None,
+        ).all()
+        if not entries:
+            return {"status": "success", "query": query, "results": []}
+
+        similarities = []
+        for entry in entries:
+            entry_emb = entry.embedding
+            if hasattr(entry_emb, "tolist"):
+                entry_emb = entry_emb.tolist()
+            elif not isinstance(entry_emb, list):
+                entry_emb = list(entry_emb)
+            sim = _cosine_similarity(query_emb_list, entry_emb)
+            similarities.append((entry, sim))
+        similarities.sort(key=lambda x: x[1], reverse=True)
+        top = similarities[:top_k]
+
+        results = []
+        for e, score in top:
+            results.append({
+                "id": e.id,
+                "title": e.title,
+                "content": e.content,
+                "similarity_score": round(score, 6),
+                "created_at": e.created_at.isoformat() if e.created_at else None,
+                "emotion": e.emotion,
+            })
+        return {"status": "success", "query": query, "results": results}
+    except Exception as e:
+        return {
+            "status": "error",
+            "query": query,
+            "message": f"Error running semantic search: {str(e)}",
         }

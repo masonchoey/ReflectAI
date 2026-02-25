@@ -1,5 +1,4 @@
 import os
-import threading
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Depends, HTTPException, status, Response
 from fastapi.middleware.cors import CORSMiddleware
@@ -17,7 +16,7 @@ from database import engine, get_db, Base
 from models import JournalEntry, User, ClusteringRun, Cluster, EntryClusterAssignment
 from schemas import (
     JournalEntryCreate, JournalEntryUpdate, JournalEntryResponse,
-    EmotionAnalysisResponse, EmotionResult, EmbeddingResponse,
+    EmbeddingResponse,
     SimilarEntry, SemanticSearchResponse, TextSearchRequest, TextSearchResponse,
     TokenizationResponse, GoogleAuthRequest, AuthResponse, UserResponse,
     ClusteringRunRequest, ClusteringRunResponse, ClusterInfoResponse, ClusterPoint, 
@@ -25,21 +24,19 @@ from schemas import (
     ClusterEntriesResponse, EntryClusterInfo,
     TaskStatusResponse
 )
-from tasks import vectorize_entry, vectorize_all_entries, run_clustering_task
+from tasks import (
+    vectorize_entry,
+    vectorize_all_entries,
+    run_clustering_task,
+    analyze_emotion_task,
+    tokenize_entry_task,
+    semantic_search_task,
+)
 from celery.result import AsyncResult
 from celery_app import celery_app
 from fly_worker import ensure_worker_running
 
 load_root_env()
-
-# Configure Hugging Face cache directory
-HF_HOME = os.getenv("HF_HOME", os.path.expanduser("~/.cache/huggingface"))
-os.environ["HF_HOME"] = HF_HOME
-os.environ["TRANSFORMERS_CACHE"] = HF_HOME
-os.environ["HF_DATASETS_CACHE"] = HF_HOME
-
-# Ensure cache directory exists
-os.makedirs(HF_HOME, exist_ok=True)
 
 # JWT Configuration
 SECRET_KEY = os.getenv("JWT_SECRET_KEY", "")
@@ -54,45 +51,6 @@ GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "")
 
 # Security scheme for JWT
 security = HTTPBearer(auto_error=False)
-
-# Model state - loaded lazily on first use
-emotion_classifier = None
-embedding_model = None
-models_loaded = False
-
-
-def load_models():
-    """Load models if they haven't been loaded yet."""
-    global emotion_classifier, embedding_model, models_loaded
-
-    # If models are already loaded, do nothing
-    if models_loaded and emotion_classifier is not None and embedding_model is not None:
-        return
-
-    # Lazy imports so app can bind to port before loading heavy ML libs (fixes Fly.io startup)
-    from transformers import pipeline
-    from sentence_transformers import SentenceTransformer
-
-    print(f"Loading models with HF_HOME={HF_HOME}...")
-    
-    print("Loading SamLowe/roberta-base-go_emotions model...")
-    emotion_classifier = pipeline(
-        "text-classification",
-        model="SamLowe/roberta-base-go_emotions",
-        top_k=None,
-        cache_dir=HF_HOME
-    )
-    print("Emotion classifier loaded successfully!")
-    
-    print("Loading ibm-granite/granite-embedding-30m-english model...")
-    embedding_model = SentenceTransformer(
-        "ibm-granite/granite-embedding-30m-english",
-        cache_folder=HF_HOME
-    )
-    print("Granite-embedding-30m-english model loaded successfully!")
-    
-    models_loaded = True
-    print("All models loaded and ready!")
 
 
 @asynccontextmanager
@@ -125,25 +83,6 @@ async def lifespan(app: FastAPI):
     # Wake the Celery worker immediately on startup so it's ready for tasks
     ensure_worker_running()
 
-    # Check if model preloading is enabled (default: True for local development)
-    # Set ENABLE_MODEL_PRELOAD=false in production to disable
-    enable_preload = os.getenv("ENABLE_MODEL_PRELOAD", "true").lower() in ("true", "1", "yes")
-    
-    if enable_preload:
-        # Preload models in background to reduce cold start latency
-        def preload_models():
-            try:
-                load_models()
-            except Exception as e:
-                print(f"Warning: Failed to preload models: {e}")
-        
-        # Start model loading in background thread
-        model_thread = threading.Thread(target=preload_models, daemon=True)
-        model_thread.start()
-        print("Model preloading enabled - starting background model load...")
-    else:
-        print("Model preloading disabled - models will be loaded on first use")
-    
     yield
     # Cleanup (if needed)
 
@@ -266,22 +205,6 @@ def require_auth(
 
 # ============== Helper Functions ==============
 
-def require_emotion_model():
-    """Get the emotion classifier, loading models lazily if needed."""
-    global emotion_classifier
-    if emotion_classifier is None:
-        load_models()
-    return emotion_classifier
-
-
-def require_embedding_model():
-    """Get the embedding model, loading models lazily if needed."""
-    global embedding_model
-    if embedding_model is None:
-        load_models()
-    return embedding_model
-
-
 def entry_to_response(entry: JournalEntry) -> JournalEntryResponse:
     """Convert a JournalEntry model to a response with computed has_embedding field."""
     return JournalEntryResponse(
@@ -371,13 +294,10 @@ def read_root():
 
 @app.get("/status")
 def get_status():
-    """Get the status of the API and model loading."""
+    """Get the status of the API. All ML models run on the Celery worker."""
     return {
-        "status": "ready" if models_loaded else "loading",
-        "models_loaded": models_loaded,
-        "emotion_model_ready": emotion_classifier is not None,
-        "embedding_model_ready": embedding_model is not None,
-        "hf_home": HF_HOME
+        "status": "ready",
+        "models": "celery_worker",
     }
 
 
@@ -472,84 +392,52 @@ def update_entry(
     return entry_to_response(entry)
 
 
-@app.post("/entries/{entry_id}/analyze", response_model=EmotionAnalysisResponse)
+@app.post("/entries/{entry_id}/analyze", response_model=TaskStatusResponse)
 def analyze_emotion(
     entry_id: int,
     current_user: User = Depends(require_auth),
     db: Session = Depends(get_db)
 ):
-    """Analyze emotions in a journal entry (must belong to authenticated user)."""
-    classifier = require_emotion_model()
-    
+    """Queue emotion analysis for a journal entry (must belong to authenticated user).
+
+    Returns a task_id that can be polled at GET /tasks/{task_id}.
+    On SUCCESS the result contains: entry_id, emotion, emotion_score, all_emotions.
+    """
     entry = db.query(JournalEntry).filter(
         JournalEntry.id == entry_id,
         JournalEntry.user_id == current_user.id
     ).first()
     if entry is None:
         raise HTTPException(status_code=404, detail="Entry not found")
-    
-    # Truncate text if too long (model has max token limit)
-    text = entry.content[:512]
-    
-    # Run emotion classification
-    results = classifier(text)[0]
-    
-    # Sort by score and get top emotion
-    sorted_results = sorted(results, key=lambda x: x['score'], reverse=True)
-    top_emotion = sorted_results[0]
-    
-    # Save emotion to database
-    entry.emotion = top_emotion['label']
-    entry.emotion_score = top_emotion['score']
-    db.commit()
-    db.refresh(entry)
-    
-    # Return full analysis
-    all_emotions = [EmotionResult(label=r['label'], score=r['score']) for r in sorted_results[:5]]
-    
-    return EmotionAnalysisResponse(
-        entry_id=entry.id,
-        emotion=top_emotion['label'],
-        emotion_score=top_emotion['score'],
-        all_emotions=all_emotions
+
+    task = analyze_emotion_task.delay(entry_id)
+    ensure_worker_running()
+
+    return TaskStatusResponse(
+        task_id=task.id,
+        status=task.state,
+        result=None
     )
 
 
-@app.get("/entries/{entry_id}/tokenize", response_model=TokenizationResponse)
+@app.post("/entries/{entry_id}/tokenize", response_model=TaskStatusResponse)
 def tokenize_entry(
     entry_id: int,
     current_user: User = Depends(require_auth),
     db: Session = Depends(get_db)
 ):
-    """Tokenize a journal entry (must belong to authenticated user)."""
-    model = require_embedding_model()
-    
+    """Queue tokenization for a journal entry (must belong to authenticated user).
+    Poll GET /tasks/{task_id} for result; on SUCCESS, result has entry_id, text, token_count, tokens, token_ids."""
     entry = db.query(JournalEntry).filter(
         JournalEntry.id == entry_id,
         JournalEntry.user_id == current_user.id
     ).first()
     if entry is None:
         raise HTTPException(status_code=404, detail="Entry not found")
-    
-    tokenizer = model.tokenizer
-    
-    # Tokenize the text
-    encoded = tokenizer.encode_plus(
-        entry.content,
-        add_special_tokens=True,
-        return_tensors=None
-    )
-    
-    token_ids = encoded['input_ids']
-    tokens = tokenizer.convert_ids_to_tokens(token_ids)
-    
-    return TokenizationResponse(
-        entry_id=entry.id,
-        text=entry.content,
-        token_count=len(tokens),
-        tokens=tokens,
-        token_ids=token_ids
-    )
+
+    task = tokenize_entry_task.delay(entry_id)
+    ensure_worker_running()
+    return TaskStatusResponse(task_id=task.id, status=task.state, result=None)
 
 
 @app.post("/entries/{entry_id}/embed", response_model=TaskStatusResponse)
@@ -662,56 +550,20 @@ def find_similar_entries(
     )
 
 
-@app.post("/search/semantic", response_model=TextSearchResponse)
+@app.post("/search/semantic", response_model=TaskStatusResponse)
 def semantic_search(
     request: TextSearchRequest,
     current_user: User = Depends(require_auth),
-    db: Session = Depends(get_db)
 ):
-    """Search user's journal entries using semantic similarity."""
-    model = require_embedding_model()
-    
-    # Generate embedding for the query text
-    query_embedding = model.encode(request.query, normalize_embeddings=True)
-    
-    # Get all entries with embeddings for this user
-    entries = db.query(JournalEntry).filter(
-        JournalEntry.user_id == current_user.id,
-        JournalEntry.embedding != None
-    ).all()
-    
-    if not entries:
-        return TextSearchResponse(query=request.query, results=[])
-    
-    # Compute similarities
-    similarities = []
-    query_emb_list = query_embedding.tolist() if hasattr(query_embedding, 'tolist') else list(query_embedding)
-    for entry in entries:
-        entry_emb = entry.embedding
-        # Convert to list if it's a numpy array or vector type
-        if hasattr(entry_emb, 'tolist'):
-            entry_emb = entry_emb.tolist()
-        elif not isinstance(entry_emb, list):
-            entry_emb = list(entry_emb)
-        similarity = compute_cosine_similarity(query_emb_list, entry_emb)
-        similarities.append((entry, similarity))
-    
-    # Sort by similarity and take top_k
-    similarities.sort(key=lambda x: x[1], reverse=True)
-    top_results = similarities[:request.top_k]
-    
-    results = [
-        SimilarEntry(
-            id=e.id,
-            content=e.content,
-            similarity_score=score,
-            created_at=e.created_at,
-            emotion=e.emotion
-        )
-        for e, score in top_results
-    ]
-    
-    return TextSearchResponse(query=request.query, results=results)
+    """Queue semantic search over user's journal entries.
+    Poll GET /tasks/{task_id} for result; on SUCCESS, result has query and results (list of SimilarEntry)."""
+    task = semantic_search_task.delay(
+        user_id=current_user.id,
+        query=request.query,
+        top_k=request.top_k,
+    )
+    ensure_worker_running()
+    return TaskStatusResponse(task_id=task.id, status=task.state, result=None)
 
 
 # ============== Cluster Visualization Endpoints ==============

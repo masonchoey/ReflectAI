@@ -17,7 +17,7 @@ FLY_API_TOKEN = os.getenv("FLY_API_TOKEN")
 # Exit after queue has been empty this many minutes (must be > task_time_limit so we
 # don't kill the worker during a long task; task_time_limit is 30 min).
 # Only used when FLY_WORKER_APP is set (production); otherwise worker runs forever.
-IDLE_MINUTES = 5
+IDLE_MINUTES = 15
 CHECK_INTERVAL_SEC = 60
 
 

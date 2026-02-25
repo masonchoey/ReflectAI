@@ -10,6 +10,7 @@ primary_region = 'lax'
   dockerfile = 'Dockerfile'
 
 [env]
+  # API does not load ML models; cache vars optional (e.g. for any future use)
   HF_DATASETS_CACHE = '/tmp/.cache/huggingface'
   HF_HOME = '/tmp/.cache/huggingface'
   TRANSFORMERS_CACHE = '/tmp/.cache/huggingface'
@@ -26,7 +27,7 @@ primary_region = 'lax'
     hard_limit = 25
     soft_limit = 20
 
-  # Health check: allow enough time for app to start (DB init, optional model preload)
+  # Health check: allow enough time for app to start (DB init)
   [[http_service.checks]]
     interval = '15s'
     timeout = '10s'
