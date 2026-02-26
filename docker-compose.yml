@@ -45,6 +45,10 @@ services:
       TRANSFORMERS_CACHE: /tmp/.cache/huggingface
       HF_DATASETS_CACHE: /tmp/.cache/huggingface
       CORS_ORIGINS: http://localhost,http://localhost:5173
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY}
+      LANGSMITH_TRACING_V2: ${LANGSMITH_TRACING_V2:-false}
+      LANGSMITH_API_KEY: ${LANGSMITH_API_KEY}
+      LANGSMITH_PROJECT: ${LANGSMITH_PROJECT:-reflectai}
     ports:
       - "8000:8000"
     volumes:
@@ -70,6 +74,10 @@ services:
       HF_HOME: /tmp/.cache/huggingface
       TRANSFORMERS_CACHE: /tmp/.cache/huggingface
       HF_DATASETS_CACHE: /tmp/.cache/huggingface
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY}
+      LANGSMITH_TRACING_V2: ${LANGSMITH_TRACING_V2:-false}
+      LANGSMITH_API_KEY: ${LANGSMITH_API_KEY}
+      LANGSMITH_PROJECT: ${LANGSMITH_PROJECT:-reflectai}
     volumes:
       - ./backend:/app
       - huggingface_cache:/tmp/.cache/huggingface
