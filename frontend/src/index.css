@@ -1268,3 +1268,425 @@ header p {
   color: var(--text-secondary);
   font-family: 'DM Sans', sans-serif;
 }
+
+/* ============================================================
+   Therapy Questions Tab
+   ============================================================ */
+
+.therapy-section {
+  max-width: 820px;
+  margin: 0 auto;
+  padding: 0 1rem 4rem;
+  display: flex;
+  flex-direction: column;
+  gap: 2rem;
+}
+
+.therapy-header {
+  text-align: center;
+  padding: 1.5rem 0 0.5rem;
+}
+
+.therapy-header h2 {
+  font-family: 'Crimson Pro', Georgia, serif;
+  font-size: 2rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 0.5rem;
+}
+
+.therapy-subtitle {
+  color: var(--text-secondary);
+  font-size: 1rem;
+  line-height: 1.6;
+  max-width: 600px;
+  margin: 0 auto;
+}
+
+/* Example questions grid */
+.therapy-examples h3 {
+  font-family: 'DM Sans', sans-serif;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  margin-bottom: 1rem;
+}
+
+.therapy-example-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 0.75rem;
+}
+
+.therapy-example-btn {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  padding: 1rem 1.25rem;
+  cursor: pointer;
+  text-align: left;
+  transition: all 0.2s;
+  font-family: 'Crimson Pro', Georgia, serif;
+  font-size: 1rem;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+
+.therapy-example-btn:hover:not(:disabled) {
+  border-color: var(--accent);
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
+}
+
+.therapy-example-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.example-quote {
+  font-style: italic;
+}
+
+/* Conversation thread */
+.therapy-conversation {
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+}
+
+.therapy-message {
+  display: flex;
+}
+
+.therapy-message--user {
+  justify-content: flex-end;
+}
+
+.therapy-message--assistant {
+  justify-content: flex-start;
+}
+
+.therapy-user-bubble {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.75rem;
+  background: linear-gradient(135deg, #1c2c1a 0%, #172415 100%);
+  border: 1px solid rgba(201, 162, 39, 0.25);
+  border-radius: 16px 16px 4px 16px;
+  padding: 1rem 1.25rem;
+  max-width: 80%;
+  font-family: 'Crimson Pro', Georgia, serif;
+  font-size: 1.05rem;
+  color: var(--text-primary);
+  line-height: 1.6;
+}
+
+.therapy-user-bubble p {
+  margin: 0;
+}
+
+.therapy-assistant-bubble {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.75rem;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: 16px 16px 16px 4px;
+  padding: 1.25rem 1.5rem;
+  max-width: 92%;
+  transition: border-color 0.2s;
+}
+
+.therapy-assistant-bubble.therapy-error {
+  border-color: #e74c3c;
+  background: rgba(231, 76, 60, 0.08);
+}
+
+.therapy-role-icon {
+  font-size: 1.5rem;
+  flex-shrink: 0;
+  line-height: 1;
+  margin-top: 0.1rem;
+}
+
+.therapy-assistant-content {
+  flex: 1;
+  min-width: 0;
+}
+
+.therapy-answer p {
+  margin: 0 0 0.75rem;
+  font-family: 'Crimson Pro', Georgia, serif;
+  font-size: 1.05rem;
+  line-height: 1.75;
+  color: var(--text-primary);
+}
+
+.therapy-answer p:last-child {
+  margin-bottom: 0;
+}
+
+/* Research / tool steps */
+.therapy-research {
+  margin-top: 1rem;
+  border-top: 1px solid var(--border-color);
+  padding-top: 0.75rem;
+}
+
+.therapy-research-toggle {
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  font-size: 0.82rem;
+  font-family: 'DM Sans', sans-serif;
+  cursor: pointer;
+  padding: 0;
+  transition: color 0.2s;
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.therapy-research-toggle:hover {
+  color: var(--accent);
+}
+
+.therapy-steps {
+  margin-top: 0.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.therapy-step {
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.therapy-step-header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.6rem 0.85rem;
+  background: rgba(255, 255, 255, 0.03);
+  border-bottom: 1px solid var(--border-color);
+  flex-wrap: wrap;
+}
+
+.therapy-step-icon {
+  font-size: 1rem;
+}
+
+.therapy-step-label {
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  font-family: 'DM Sans', sans-serif;
+}
+
+.therapy-step-input {
+  font-size: 0.78rem;
+  color: var(--accent);
+  font-family: 'DM Mono', monospace, sans-serif;
+  background: var(--accent-glow);
+  padding: 0.15rem 0.5rem;
+  border-radius: 4px;
+  max-width: 400px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.therapy-step-observation {
+  padding: 0.75rem 0.85rem;
+}
+
+.therapy-step-observation pre {
+  margin: 0;
+  font-family: 'DM Sans', sans-serif;
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+  word-break: break-word;
+  line-height: 1.6;
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+/* Thinking / loading state */
+.therapy-thinking {
+  opacity: 0.85;
+}
+
+.therapy-loading-dots {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  font-family: 'DM Sans', sans-serif;
+  font-size: 0.95rem;
+  color: var(--text-secondary);
+  padding-top: 0.3rem;
+}
+
+@keyframes dotBounce {
+  0%, 80%, 100% { opacity: 0.3; transform: translateY(0); }
+  40% { opacity: 1; transform: translateY(-4px); }
+}
+
+.dot-1 { animation: dotBounce 1.2s infinite 0s; font-size: 1.4rem; line-height: 1; }
+.dot-2 { animation: dotBounce 1.2s infinite 0.2s; font-size: 1.4rem; line-height: 1; }
+.dot-3 { animation: dotBounce 1.2s infinite 0.4s; font-size: 1.4rem; line-height: 1; }
+
+/* Input form */
+.therapy-input-form {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: 14px;
+  overflow: hidden;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+
+.therapy-input-form:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-glow);
+}
+
+.therapy-input {
+  width: 100%;
+  padding: 1rem 1.25rem;
+  background: transparent;
+  border: none;
+  outline: none;
+  font-family: 'Crimson Pro', Georgia, serif;
+  font-size: 1.05rem;
+  color: var(--text-primary);
+  resize: none;
+  line-height: 1.6;
+}
+
+.therapy-input::placeholder {
+  color: var(--text-secondary);
+  opacity: 0.7;
+}
+
+.therapy-input-actions {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.6rem 1rem 0.6rem 1.25rem;
+  border-top: 1px solid var(--border-color);
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.therapy-hint {
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  font-family: 'DM Sans', sans-serif;
+}
+
+.therapy-submit-btn {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.55rem 1.25rem;
+  background: var(--accent);
+  color: #0d1117;
+  border: none;
+  border-radius: 8px;
+  font-family: 'DM Sans', sans-serif;
+  font-size: 0.9rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.therapy-submit-btn:hover:not(:disabled) {
+  background: #f0d878;
+  transform: translateY(-1px);
+}
+
+.therapy-submit-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  transform: none;
+}
+
+/* Spinner inside button */
+.therapy-spinner {
+  width: 14px;
+  height: 14px;
+  border: 2px solid rgba(13, 17, 23, 0.3);
+  border-top-color: #0d1117;
+  border-radius: 50%;
+  animation: spin 0.6s linear infinite;
+  display: inline-block;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+/* Bottom actions bar */
+.therapy-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem;
+  padding-top: 0.5rem;
+}
+
+.therapy-clear-btn {
+  background: transparent;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  color: var(--text-secondary);
+  font-family: 'DM Sans', sans-serif;
+  font-size: 0.82rem;
+  padding: 0.4rem 0.9rem;
+  cursor: pointer;
+  transition: all 0.2s;
+  white-space: nowrap;
+}
+
+.therapy-clear-btn:hover {
+  border-color: #e74c3c;
+  color: #e74c3c;
+}
+
+.therapy-example-suggestions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+  font-family: 'DM Sans', sans-serif;
+}
+
+.therapy-suggestion-chip {
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-color);
+  border-radius: 20px;
+  color: var(--text-secondary);
+  font-family: 'DM Sans', sans-serif;
+  font-size: 0.78rem;
+  padding: 0.3rem 0.8rem;
+  cursor: pointer;
+  transition: all 0.2s;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.therapy-suggestion-chip:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--accent-glow);
+}

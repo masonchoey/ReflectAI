@@ -48,6 +48,13 @@ function App() {
   const [umapNNeighbors, setUmapNNeighbors] = useState(8)  // Reduced to 8 for more local clusters
   const [umapMinDist, setUmapMinDist] = useState(0.0)
   
+  // Therapy questions state
+  const [therapyQuestion, setTherapyQuestion] = useState('')
+  const [therapyTaskId, setTherapyTaskId] = useState(null)
+  const [therapyLoading, setTherapyLoading] = useState(false)
+  const [therapyConversation, setTherapyConversation] = useState([]) // [{role, content, steps}]
+  const [therapyStepsExpanded, setTherapyStepsExpanded] = useState({}) // {messageIdx: bool}
+
   // Auth state
   const [user, setUser] = useState(null)
   const [token, setToken] = useState(() => localStorage.getItem('auth_token'))
@@ -550,6 +557,124 @@ function App() {
     }
   }
 
+  const THERAPY_EXAMPLE_QUESTIONS = [
+    "What patterns do you notice in how I handle stress or difficult moments?",
+    "Based on my journal entries, what brings me the most joy and fulfillment?",
+    "What recurring themes or challenges keep showing up in my life?",
+    "How have my emotions and mood evolved over the past few months?",
+    "What do my journal entries reveal about my relationships and social life?",
+    "Where do I seem to be growing the most as a person?",
+    "What fears or anxieties come up most often in my writing?",
+    "What values and priorities seem most important to me based on what I write about?",
+  ]
+
+  const askTherapyQuestion = async (questionText) => {
+    const q = (questionText || therapyQuestion).trim()
+    if (!q || therapyLoading) return
+
+    setTherapyConversation(prev => [...prev, { role: 'user', content: q }])
+    setTherapyQuestion('')
+    setTherapyLoading(true)
+
+    try {
+      const response = await fetch(`${API_URL}/therapy/ask`, {
+        method: 'POST',
+        headers: getAuthHeaders(),
+        body: JSON.stringify({ question: q }),
+      })
+      if (!response.ok) {
+        if (response.status === 401) { handleSignOut(); return }
+        throw new Error('Failed to queue therapy question')
+      }
+      const taskData = await response.json()
+      setTherapyTaskId(taskData.task_id)
+      ensure_worker_running_if_available()
+
+      const pollTherapy = async () => {
+        try {
+          const statusRes = await fetch(`${API_URL}/tasks/${taskData.task_id}`, {
+            headers: getAuthHeaders(),
+          })
+          if (!statusRes.ok) {
+            if (statusRes.status === 401) { handleSignOut(); return }
+            throw new Error('Failed to fetch therapy task status')
+          }
+          const status = await statusRes.json()
+
+          if (status.status === 'SUCCESS' && status.result) {
+            const result = status.result
+            setTherapyConversation(prev => [
+              ...prev,
+              {
+                role: 'assistant',
+                content: result.answer || 'I was unable to generate a response.',
+                steps: result.steps || [],
+              },
+            ])
+            setTherapyLoading(false)
+            setTherapyTaskId(null)
+          } else if (status.status === 'FAILURE' || status.status === 'REVOKED') {
+            setTherapyConversation(prev => [
+              ...prev,
+              {
+                role: 'assistant',
+                content: 'I encountered an error while processing your question. Please try again.',
+                steps: [],
+                isError: true,
+              },
+            ])
+            setTherapyLoading(false)
+            setTherapyTaskId(null)
+          } else {
+            setTimeout(pollTherapy, 2500)
+          }
+        } catch (err) {
+          console.error('Error polling therapy task:', err)
+          setTimeout(pollTherapy, 3000)
+        }
+      }
+
+      setTimeout(pollTherapy, 1500)
+    } catch (err) {
+      setTherapyConversation(prev => [
+        ...prev,
+        { role: 'assistant', content: 'Failed to connect. Please try again.', steps: [], isError: true },
+      ])
+      setTherapyLoading(false)
+    }
+  }
+
+  // eslint-disable-next-line no-unused-vars
+  const ensure_worker_running_if_available = () => {}
+
+  const toggleTherapySteps = (idx) => {
+    setTherapyStepsExpanded(prev => ({ ...prev, [idx]: !prev[idx] }))
+  }
+
+  const getToolIcon = (toolName) => {
+    const icons = {
+      search_journals: '🔍',
+      get_recent_entries: '📅',
+      get_entries_by_emotion: '💫',
+      get_journal_themes: '🗺️',
+      get_emotional_timeline: '📈',
+      get_journal_statistics: '📊',
+    }
+    return icons[toolName] || '🔧'
+  }
+
+  const getToolLabel = (toolName) => {
+    const labels = {
+      search_journals: 'Searched journals',
+      get_recent_entries: 'Retrieved recent entries',
+      get_entries_by_emotion: 'Filtered by emotion',
+      get_journal_themes: 'Analysed themes',
+      get_emotional_timeline: 'Reviewed emotional timeline',
+      get_journal_statistics: 'Checked statistics',
+    }
+    return labels[toolName] || toolName
+  }
+
   const toggleEmotionBreakdown = (entryId) => {
     setExpandedEmotionEntries(prev => ({
       ...prev,
@@ -691,6 +816,12 @@ function App() {
           onClick={() => setActiveTab('clusters')}
         >
           🔍 Clusters
+        </button>
+        <button
+          className={`tab ${activeTab === 'therapy' ? 'active' : ''}`}
+          onClick={() => setActiveTab('therapy')}
+        >
+          🧠 Therapy Questions
         </button>
       </div>
 
@@ -1353,6 +1484,178 @@ function App() {
                   <p>No visualization data available for this run.</p>
                 </div>
               )}
+              </div>
+            </div>
+          )}
+        </section>
+      )}
+
+      {activeTab === 'therapy' && (
+        <section className="therapy-section">
+          <div className="therapy-header">
+            <h2>🧠 Therapy-Style Questions</h2>
+            <p className="therapy-subtitle">
+              Ask deep, reflective questions about your life. An AI therapist will search your
+              journal entries to provide personalized, grounded insights.
+            </p>
+          </div>
+
+          {therapyConversation.length === 0 && (
+            <div className="therapy-examples">
+              <h3>Example questions to explore</h3>
+              <div className="therapy-example-grid">
+                {THERAPY_EXAMPLE_QUESTIONS.map((q, i) => (
+                  <button
+                    key={i}
+                    className="therapy-example-btn"
+                    onClick={() => askTherapyQuestion(q)}
+                    disabled={therapyLoading}
+                  >
+                    <span className="example-quote">&ldquo;{q}&rdquo;</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {therapyConversation.length > 0 && (
+            <div className="therapy-conversation">
+              {therapyConversation.map((msg, idx) => (
+                <div key={idx} className={`therapy-message therapy-message--${msg.role}`}>
+                  {msg.role === 'user' ? (
+                    <div className="therapy-user-bubble">
+                      <span className="therapy-role-icon">🙋</span>
+                      <p>{msg.content}</p>
+                    </div>
+                  ) : (
+                    <div className={`therapy-assistant-bubble ${msg.isError ? 'therapy-error' : ''}`}>
+                      <span className="therapy-role-icon">🧠</span>
+                      <div className="therapy-assistant-content">
+                        <div className="therapy-answer">
+                          {msg.content.split('\n').map((line, li) => (
+                            <p key={li}>{line}</p>
+                          ))}
+                        </div>
+
+                        {msg.steps && msg.steps.length > 0 && (
+                          <div className="therapy-research">
+                            <button
+                              className="therapy-research-toggle"
+                              onClick={() => toggleTherapySteps(idx)}
+                              type="button"
+                            >
+                              {therapyStepsExpanded[idx] ? '▼' : '▶'}&nbsp;
+                              Journal research ({msg.steps.length} {msg.steps.length === 1 ? 'search' : 'searches'})
+                            </button>
+
+                            {therapyStepsExpanded[idx] && (
+                              <div className="therapy-steps">
+                                {msg.steps.map((step, si) => (
+                                  <div key={si} className="therapy-step">
+                                    <div className="therapy-step-header">
+                                      <span className="therapy-step-icon">{getToolIcon(step.tool)}</span>
+                                      <span className="therapy-step-label">{getToolLabel(step.tool)}</span>
+                                      {step.tool_input && Object.keys(step.tool_input).length > 0 && (
+                                        <span className="therapy-step-input">
+                                          {Object.entries(step.tool_input)
+                                            .filter(([k]) => k !== 'dummy')
+                                            .map(([k, v]) => `${k}: "${v}"`)
+                                            .join(', ')}
+                                        </span>
+                                      )}
+                                    </div>
+                                    <div className="therapy-step-observation">
+                                      <pre>{step.observation}</pre>
+                                    </div>
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              ))}
+
+              {therapyLoading && (
+                <div className="therapy-message therapy-message--assistant">
+                  <div className="therapy-assistant-bubble therapy-thinking">
+                    <span className="therapy-role-icon">🧠</span>
+                    <div className="therapy-loading-dots">
+                      <span>Searching your journals</span>
+                      <span className="dot-1">.</span>
+                      <span className="dot-2">.</span>
+                      <span className="dot-3">.</span>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          <form
+            className="therapy-input-form"
+            onSubmit={(e) => { e.preventDefault(); askTherapyQuestion() }}
+          >
+            <textarea
+              className="therapy-input"
+              value={therapyQuestion}
+              onChange={(e) => setTherapyQuestion(e.target.value)}
+              placeholder="Ask a reflective question about your life, patterns, emotions, or growth..."
+              disabled={therapyLoading}
+              rows={3}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                  e.preventDefault()
+                  askTherapyQuestion()
+                }
+              }}
+            />
+            <div className="therapy-input-actions">
+              <span className="therapy-hint">Press Enter to send · Shift+Enter for new line</span>
+              <button
+                type="submit"
+                className="therapy-submit-btn"
+                disabled={therapyLoading || !therapyQuestion.trim()}
+              >
+                {therapyLoading ? (
+                  <>
+                    <span className="therapy-spinner" />
+                    Reflecting...
+                  </>
+                ) : (
+                  '✨ Ask'
+                )}
+              </button>
+            </div>
+          </form>
+
+          {therapyConversation.length > 0 && !therapyLoading && (
+            <div className="therapy-actions">
+              <button
+                className="therapy-clear-btn"
+                onClick={() => {
+                  setTherapyConversation([])
+                  setTherapyStepsExpanded({})
+                }}
+                type="button"
+              >
+                Clear conversation
+              </button>
+              <div className="therapy-example-suggestions">
+                <span>Try asking:</span>
+                {THERAPY_EXAMPLE_QUESTIONS.slice(0, 3).map((q, i) => (
+                  <button
+                    key={i}
+                    className="therapy-suggestion-chip"
+                    onClick={() => askTherapyQuestion(q)}
+                    type="button"
+                  >
+                    {q.slice(0, 50)}...
+                  </button>
+                ))}
               </div>
             </div>
           )}

@@ -198,3 +198,8 @@ class TaskStatusResponse(BaseModel):
     status: str
     result: Optional[dict] = None
     error: Optional[str] = None
+
+
+# Therapy question schemas
+class TherapyQuestionRequest(BaseModel):
+    question: str
