@@ -293,7 +293,8 @@ class TopicLabeler:
         max_samples: int = 5,
         max_entry_length: int = 300,
         max_new_tokens: int = 64,
-        temperature: float = 0.3
+        temperature: float = 0.3,
+        existing_labels: Optional[List[str]] = None
     ) -> str:
         """
         Generate a topic label for a cluster based on sample entries.
@@ -304,6 +305,7 @@ class TopicLabeler:
             max_entry_length: Maximum characters per entry
             max_new_tokens: Maximum tokens to generate for the label
             temperature: Sampling temperature (lower = more deterministic)
+            existing_labels: Labels already used for other clusters; new label must be distinct
 
         Returns:
             A short topic label (ideally 2–5 words)
@@ -318,16 +320,22 @@ class TopicLabeler:
         ]
         cluster_entries = "\n\n".join([f"Entry {i+1}: {entry}" for i, entry in enumerate(truncated_samples)])
 
+        existing_section = ""
+        if existing_labels:
+            existing_section = f"\nThe following labels are already in use for other clusters: {existing_labels}.\nYour label MUST be meaningfully different from all of these—do not repeat or paraphrase them.\n"
+
         prompt = f"""You are an expert at labeling topics from journal entries.
 
 Your task is to generate a short, coherent topic title that describes the common theme across the following journal entries.
 Requirements:
 - The title should be 2 to 5 words long
-- The title should be descriptive and specific
+- The title should be descriptive and specific to THIS set of entries
+- Focus on the most specific, concrete theme—not broad life categories (e.g. avoid "Personal Reflections", "Daily Life", "Social Interactions")
+- The label should describe what specifically these entries are about, not just a generic category
 - The title should not be a full sentence
 - Do not include punctuation or explanations
 - Output only the title, nothing else
-
+{existing_section}
 Journal entries:
 {cluster_entries}
 
@@ -477,7 +485,11 @@ Output only the summary paragraph, nothing else."""
                 print(f"  [{i+1}/{len(cluster_ids)}] Cluster {cluster_id}...", end=" ", flush=True)
             
             try:
-                label = self.generate_topic_label(cluster_samples[cluster_id])
+                existing = [labels[cid] for cid in cluster_ids if cid in labels]
+                label = self.generate_topic_label(
+                    cluster_samples[cluster_id],
+                    existing_labels=existing if existing else None
+                )
                 labels[cluster_id] = label
                 if show_progress:
                     print(f"→ {label}")
@@ -1133,19 +1145,26 @@ def run_clustering(
             else:
                 print("\n--- Generating Topic Labels ---")
                 
-                # Collect sample entries for each cluster
+                # Collect sample entries for each cluster (most representative first:
+                # centroid entry if available, then by membership probability descending)
                 cluster_samples = {}
                 for info in cluster_infos:
-                    # Get entries in this cluster (primary assignment)
-                    cluster_entry_ids = [
-                        a.entry_id for a in assignments
+                    cluster_assignments = [
+                        (a.entry_id, a.membership_probability)
+                        for a in assignments
                         if a.cluster_id == info.cluster_id and a.is_primary
                     ]
-                    # Get top 8 entry contents for richer summaries
-                    sample_contents = []
-                    for eid in cluster_entry_ids[:8]:
-                        if eid in entry_map:
-                            sample_contents.append(entry_map[eid].content)
+                    cluster_assignments.sort(key=lambda x: x[1], reverse=True)
+                    entry_ids_ordered = [eid for eid, _ in cluster_assignments]
+                    if info.centroid_entry_id is not None and info.centroid_entry_id in entry_map:
+                        if info.centroid_entry_id in entry_ids_ordered:
+                            entry_ids_ordered.remove(info.centroid_entry_id)
+                        entry_ids_ordered = [info.centroid_entry_id] + entry_ids_ordered
+                    cluster_entry_ids = entry_ids_ordered[:8]
+                    sample_contents = [
+                        entry_map[eid].content for eid in cluster_entry_ids
+                        if eid in entry_map
+                    ]
                     cluster_samples[info.cluster_id] = sample_contents
                 
                 # Generate labels
