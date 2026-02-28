@@ -9,6 +9,56 @@ const API_URL = import.meta.env.VITE_API_URL || (
 )
 const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID || ''
 
+const CLUSTER_PARAMS_STORAGE_KEY = 'reflectai_cluster_params'
+
+const DEFAULT_CLUSTER_PARAMS = {
+  minClusterSize: 2,
+  minSamples: 1,
+  membershipThreshold: 0.05,
+  clusterSelectionEpsilon: 0.0,
+  umapNComponents: 5,
+  umapNNeighbors: 8,
+  umapMinDist: 0.0
+}
+
+const CLUSTER_PARAMS_BOUNDS = {
+  minClusterSize: { min: 2, max: 20 },
+  minSamples: { min: 1, max: 10 },
+  membershipThreshold: { min: 0.05, max: 0.5 },
+  clusterSelectionEpsilon: { min: 0, max: 1 },
+  umapNComponents: { min: 5, max: 30 },
+  umapNNeighbors: { min: 5, max: 50 },
+  umapMinDist: { min: 0, max: 1 }
+}
+
+function loadClusterParamsFromStorage(userId) {
+  try {
+    const key = `${CLUSTER_PARAMS_STORAGE_KEY}_${userId}`
+    const raw = localStorage.getItem(key)
+    if (!raw) return null
+    const parsed = JSON.parse(raw)
+    const out = {}
+    for (const [key, val] of Object.entries(parsed)) {
+      if (!(key in CLUSTER_PARAMS_BOUNDS)) continue
+      const { min, max } = CLUSTER_PARAMS_BOUNDS[key]
+      const num = Number(val)
+      if (Number.isFinite(num)) out[key] = Math.min(max, Math.max(min, num))
+    }
+    return Object.keys(out).length === Object.keys(CLUSTER_PARAMS_BOUNDS).length ? out : null
+  } catch {
+    return null
+  }
+}
+
+function saveClusterParamsToStorage(userId, params) {
+  try {
+    const key = `${CLUSTER_PARAMS_STORAGE_KEY}_${userId}`
+    localStorage.setItem(key, JSON.stringify(params))
+  } catch (e) {
+    console.warn('Failed to save cluster params to localStorage', e)
+  }
+}
+
 function App() {
   const [entries, setEntries] = useState([])
   const [title, setTitle] = useState('')
@@ -52,6 +102,7 @@ function App() {
   const [user, setUser] = useState(null)
   const [token, setToken] = useState(() => localStorage.getItem('auth_token'))
   const [authLoading, setAuthLoading] = useState(true)
+  const skipNextClusterParamsSaveRef = useRef(false)
 
   // Get auth headers for API requests
   const getAuthHeaders = useCallback(() => {
@@ -94,6 +145,39 @@ function App() {
 
     verifyToken()
   }, [token])
+
+  // Load persisted cluster params when user is set
+  useEffect(() => {
+    if (!user?.id) return
+    const saved = loadClusterParamsFromStorage(user.id)
+    if (!saved) return
+    setMinClusterSize(saved.minClusterSize)
+    setMinSamples(saved.minSamples)
+    setMembershipThreshold(saved.membershipThreshold)
+    setClusterSelectionEpsilon(saved.clusterSelectionEpsilon)
+    setUmapNComponents(saved.umapNComponents)
+    setUmapNNeighbors(saved.umapNNeighbors)
+    setUmapMinDist(saved.umapMinDist)
+    skipNextClusterParamsSaveRef.current = true
+  }, [user?.id])
+
+  // Persist cluster params when they change (and user is logged in)
+  useEffect(() => {
+    if (!user?.id) return
+    if (skipNextClusterParamsSaveRef.current) {
+      skipNextClusterParamsSaveRef.current = false
+      return
+    }
+    saveClusterParamsToStorage(user.id, {
+      minClusterSize,
+      minSamples,
+      membershipThreshold,
+      clusterSelectionEpsilon,
+      umapNComponents,
+      umapNNeighbors,
+      umapMinDist
+    })
+  }, [user?.id, minClusterSize, minSamples, membershipThreshold, clusterSelectionEpsilon, umapNComponents, umapNNeighbors, umapMinDist])
 
   // Initialize Google Sign-In
   useEffect(() => {
@@ -168,6 +252,9 @@ function App() {
 
   // Handle sign out
   const handleSignOut = () => {
+    if (user?.id) {
+      localStorage.removeItem(`${CLUSTER_PARAMS_STORAGE_KEY}_${user.id}`)
+    }
     localStorage.removeItem('auth_token')
     setToken(null)
     setUser(null)
