@@ -816,7 +816,7 @@ def therapy_question_task(self, user_id: int, question: str):
     # ── LLM (LLama 3.3 70B via OpenRouter) ──────────────────────────────────
 
     llm = ChatOpenAI(
-        model="meta-llama/llama-3.3-70b-instruct:free",
+        model="arcee-ai/trinity-large-preview:free", #"meta-llama/llama-3.3-70b-instruct:free",
         openai_api_key=openrouter_api_key,
         openai_api_base="https://openrouter.ai/api/v1",
         temperature=0.7,
@@ -841,7 +841,7 @@ def therapy_question_task(self, user_id: int, question: str):
             result = graph.invoke(
                 {"messages": [HumanMessage(content=question)]},
                 config={
-                    "recursion_limit": 8,
+                    "recursion_limit": 20,
                     "run_name": "therapy-agent",
                     "metadata": {
                         "user_id": user_id,
