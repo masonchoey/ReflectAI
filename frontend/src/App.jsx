@@ -1368,8 +1368,12 @@ function ClusterVisualization({ data, hoveredPoint, onPointHover }) {
   const [dimensions, setDimensions] = useState({ width: 800, height: 600 })
   const [transform, setTransform] = useState({ x: 0, y: 0, scale: 1 })
   const [selectedClusterId, setSelectedClusterId] = useState(null)
+  const [clusterPanelOpen, setClusterPanelOpen] = useState(false)
   const isPanningRef = useRef(false)
   const lastPosRef = useRef({ x: 0, y: 0 })
+  const transformRef = useRef(transform)
+  const zoomAnimationRef = useRef(null)
+  transformRef.current = transform
 
   const handleZoomIn = () => {
     setTransform(prev => ({
@@ -1404,6 +1408,94 @@ function ClusterVisualization({ data, hoveredPoint, onPointHover }) {
     window.addEventListener('resize', updateDimensions)
     return () => window.removeEventListener('resize', updateDimensions)
   }, [])
+
+  // When a cluster is selected from the legend, zoom to fit that cluster (animated)
+  useEffect(() => {
+    const ZOOM_DURATION_MS = 150
+    const easeOutCubic = (t) => 1 - (1 - t) ** 3
+
+    const applyTarget = (target) => {
+      const start = { ...transformRef.current }
+      const startTime = performance.now()
+      if (zoomAnimationRef.current) cancelAnimationFrame(zoomAnimationRef.current)
+
+      const tick = () => {
+        const elapsed = performance.now() - startTime
+        const t = Math.min(elapsed / ZOOM_DURATION_MS, 1)
+        const eased = easeOutCubic(t)
+        setTransform({
+          x: start.x + (target.x - start.x) * eased,
+          y: start.y + (target.y - start.y) * eased,
+          scale: start.scale + (target.scale - start.scale) * eased
+        })
+        if (t < 1) zoomAnimationRef.current = requestAnimationFrame(tick)
+      }
+      zoomAnimationRef.current = requestAnimationFrame(tick)
+    }
+
+    if (selectedClusterId === null) {
+      applyTarget({ x: 0, y: 0, scale: 1 })
+      return () => {
+        if (zoomAnimationRef.current) {
+          cancelAnimationFrame(zoomAnimationRef.current)
+          zoomAnimationRef.current = null
+        }
+      }
+    }
+    const padding = 50
+    const width = dimensions.width - 2 * padding
+    const height = dimensions.height - 2 * padding
+    if (width <= 0 || height <= 0) return
+
+    const isInSelectedCluster = (point) => {
+      if (point.all_memberships && point.all_memberships.length > 0) {
+        const primary = point.all_memberships.find(m => m.is_primary)
+        return primary && primary.cluster_id === selectedClusterId
+      }
+      return point.cluster_id === selectedClusterId
+    }
+    const clusterPoints = data.points.filter(isInSelectedCluster)
+    if (clusterPoints.length === 0) return
+
+    const allX = data.points.map(p => p.x)
+    const allY = data.points.map(p => p.y)
+    const xMin = Math.min(...allX)
+    const xMax = Math.max(...allX)
+    const yMin = Math.min(...allY)
+    const yMax = Math.max(...allY)
+    const xRange = xMax - xMin || 1
+    const yRange = yMax - yMin || 1
+    const dataCenterX = (xMin + xMax) / 2
+    const dataCenterY = (yMin + yMax) / 2
+    const baseScale = Math.min(
+      (dimensions.width - 2 * padding) / xRange,
+      (dimensions.height - 2 * padding) / yRange
+    )
+
+    const cMinX = Math.min(...clusterPoints.map(p => p.x))
+    const cMaxX = Math.max(...clusterPoints.map(p => p.x))
+    const cMinY = Math.min(...clusterPoints.map(p => p.y))
+    const cMaxY = Math.max(...clusterPoints.map(p => p.y))
+    const crx = cMaxX - cMinX || xRange * 0.1
+    const cry = cMaxY - cMinY || yRange * 0.1
+    const margin = 1.2
+    const scaleFit = Math.min(width / (crx * margin), height / (cry * margin))
+    const newScale = Math.min(5, Math.max(0.4, scaleFit / baseScale))
+    const cx = (cMinX + cMaxX) / 2
+    const cy = (cMinY + cMaxY) / 2
+    const target = {
+      x: -baseScale * newScale * (cx - dataCenterX),
+      y: -baseScale * newScale * (cy - dataCenterY),
+      scale: newScale
+    }
+    applyTarget(target)
+    return () => {
+      if (zoomAnimationRef.current) {
+        cancelAnimationFrame(zoomAnimationRef.current)
+        zoomAnimationRef.current = null
+      }
+    }
+  }, [selectedClusterId, data.points, dimensions.width, dimensions.height])
 
   // Calculate bounds and scaling
   const xValues = data.points.map(p => p.x)
@@ -1516,6 +1608,7 @@ function ClusterVisualization({ data, hoveredPoint, onPointHover }) {
 
   return (
     <div className="cluster-viz-container">
+      <div className="cluster-viz-main">
       <div className="cluster-zoom-controls">
         <button
           type="button"
@@ -1661,7 +1754,7 @@ function ClusterVisualization({ data, hoveredPoint, onPointHover }) {
           {selectedClusterId !== null && (
             <button
               className="legend-clear-filter"
-              onClick={() => setSelectedClusterId(null)}
+              onClick={() => { setSelectedClusterId(null); setClusterPanelOpen(false) }}
               type="button"
             >
               Clear Filter
@@ -1677,7 +1770,15 @@ function ClusterVisualization({ data, hoveredPoint, onPointHover }) {
               <div 
                 key={cluster.cluster_id} 
                 className={`legend-item ${isSelected ? 'selected' : ''}`}
-                onClick={() => setSelectedClusterId(isSelected ? null : cluster.cluster_id)}
+                onClick={() => {
+                  if (isSelected) {
+                    setSelectedClusterId(null)
+                    setClusterPanelOpen(false)
+                  } else {
+                    setSelectedClusterId(cluster.cluster_id)
+                    setClusterPanelOpen(true)
+                  }
+                }}
                 style={{ cursor: 'pointer' }}
               >
                 <span
@@ -1693,7 +1794,15 @@ function ClusterVisualization({ data, hoveredPoint, onPointHover }) {
           {data.points.some(p => p.cluster_id === -1) && (
             <div 
               className={`legend-item ${selectedClusterId === -1 ? 'selected' : ''}`}
-              onClick={() => setSelectedClusterId(selectedClusterId === -1 ? null : -1)}
+              onClick={() => {
+                if (selectedClusterId === -1) {
+                  setSelectedClusterId(null)
+                  setClusterPanelOpen(false)
+                } else {
+                  setSelectedClusterId(-1)
+                  setClusterPanelOpen(false)
+                }
+              }}
               style={{ cursor: 'pointer' }}
             >
               <span
@@ -1707,6 +1816,60 @@ function ClusterVisualization({ data, hoveredPoint, onPointHover }) {
             </div>
           )}
         </div>
+      </div>
+      </div>
+
+      {/* Cluster Summary Side Panel */}
+      <div className={`cluster-summary-sidebar ${clusterPanelOpen && selectedClusterId != null && selectedClusterId !== -1 ? 'open' : ''}`}>
+        {clusterPanelOpen && selectedClusterId !== null && selectedClusterId !== -1 && (() => {
+          const cluster = data.clusters.find(c => c.cluster_id === selectedClusterId)
+          if (!cluster) return null
+          const color = clusterColors[selectedClusterId] || '#CCCCCC'
+          const name = cluster.topic_label || `Cluster ${selectedClusterId}`
+          const entryCount = data.points.filter(p => {
+            if (p.all_memberships && p.all_memberships.length > 0) {
+              const primary = p.all_memberships.find(m => m.is_primary)
+              return primary && primary.cluster_id === selectedClusterId
+            }
+            return p.cluster_id === selectedClusterId
+          }).length
+          return (
+            <div className="cluster-summary-panel">
+              <div className="cluster-summary-header">
+                <span className="cluster-summary-color" style={{ backgroundColor: color }} />
+                <h3 className="cluster-summary-title">{name}</h3>
+                <button
+                  className="cluster-summary-close"
+                  onClick={() => { setClusterPanelOpen(false); setSelectedClusterId(null) }}
+                  type="button"
+                  aria-label="Close summary"
+                >
+                  ×
+                </button>
+              </div>
+              <div className="cluster-summary-stats">
+                <span className="cluster-stat">
+                  <strong>{entryCount}</strong> entries
+                </span>
+                {cluster.persistence != null && (
+                  <span className="cluster-stat">
+                    Stability: <strong>{(cluster.persistence * 100).toFixed(0)}%</strong>
+                  </span>
+                )}
+              </div>
+              {cluster.summary ? (
+                <div className="cluster-summary-body">
+                  <h4>Summary</h4>
+                  <p>{cluster.summary}</p>
+                </div>
+              ) : (
+                <div className="cluster-summary-body cluster-summary-empty">
+                  <p>No summary available. Re-run clustering with topic generation enabled to generate summaries.</p>
+                </div>
+              )}
+            </div>
+          )
+        })()}
       </div>
     </div>
   )
