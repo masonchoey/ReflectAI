@@ -697,7 +697,8 @@ def get_cluster_visualization(
             'name': cluster_name,
             'size': cluster.size,
             'persistence': cluster.persistence,
-            'topic_label': cluster.topic_label
+            'topic_label': cluster.topic_label,
+            'summary': cluster.summary
         }
     
     # Filter entries that have assignments in this run
@@ -783,7 +784,8 @@ def get_cluster_visualization(
             cluster_id=cluster.cluster_id,
             size=cluster.size,
             persistence=cluster.persistence,
-            topic_label=cluster.topic_label
+            topic_label=cluster.topic_label,
+            summary=cluster.summary
         )
         for cluster in clusters
     ]

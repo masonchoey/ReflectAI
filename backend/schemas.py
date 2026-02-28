@@ -137,6 +137,7 @@ class ClusterInfoResponse(BaseModel):
     size: int
     persistence: Optional[float] = None
     topic_label: Optional[str] = None
+    summary: Optional[str] = None
 
     class Config:
         from_attributes = True
