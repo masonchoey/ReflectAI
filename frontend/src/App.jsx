@@ -4,7 +4,7 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 // In production (Fly), use the Fly API URL; in development, use localhost
 const API_URL = import.meta.env.VITE_API_URL || (
   window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
-    ? 'http://localhost:8001'
+    ? 'http://localhost:8000'
     : 'https://reflectai-api-icy-dust-4243.fly.dev'
 )
 const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID || ''

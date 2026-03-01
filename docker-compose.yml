@@ -51,7 +51,7 @@ services:
       LANGSMITH_API_KEY: ${LANGSMITH_API_KEY}
       LANGSMITH_PROJECT: ${LANGSMITH_PROJECT:-reflectai}
     ports:
-      - "8001:8000"
+      - "8000:8001"
     volumes:
       - ./backend:/app
       - huggingface_cache:/tmp/.cache/huggingface
@@ -60,7 +60,7 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-    command: uvicorn main:app --host 0.0.0.0 --port 8000
+    command: uvicorn main:app --host 0.0.0.0 --port 8001
 
   init-models:
     build:
@@ -114,7 +114,7 @@ services:
       context: ./frontend
       dockerfile: Dockerfile
       args:
-        VITE_API_URL: http://localhost:8001
+        VITE_API_URL: http://localhost:8000
         VITE_GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID}
     container_name: reflectai-frontend
     ports:
