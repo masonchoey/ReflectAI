@@ -116,6 +116,22 @@ class ClusteringRunRequest(BaseModel):
     umap_min_dist: Optional[float] = None
 
 
+class RecommendedClusterParams(BaseModel):
+    min_cluster_size: int
+    min_samples: int
+    membership_threshold: float
+    cluster_selection_epsilon: float
+    umap_n_components: int
+    umap_n_neighbors: int
+    umap_min_dist: float
+
+
+class ClusteringRecommendResponse(BaseModel):
+    params: RecommendedClusterParams
+    reasoning: str
+    embedding_coverage: float
+
+
 class ClusteringRunResponse(BaseModel):
     id: int
     run_timestamp: datetime
@@ -137,6 +153,7 @@ class ClusterInfoResponse(BaseModel):
     size: int
     persistence: Optional[float] = None
     topic_label: Optional[str] = None
+    summary: Optional[str] = None
 
     class Config:
         from_attributes = True
@@ -198,3 +215,15 @@ class TaskStatusResponse(BaseModel):
     status: str
     result: Optional[dict] = None
     error: Optional[str] = None
+
+
+# Admin schemas
+class BulkAnalyzeRequest(BaseModel):
+    user_id: Optional[int] = None
+    email: Optional[str] = None
+
+
+class BulkAnalyzeResponse(BaseModel):
+    queued: int
+    task_ids: List[str]
+    entry_ids: List[int]

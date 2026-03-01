@@ -361,7 +361,7 @@ def analyze_emotion_task(self, entry_id: int):
         db.refresh(entry)
 
         all_emotions = [
-            {"label": r["label"], "score": r["score"]} for r in sorted_results[:5]
+            {"label": r["label"], "score": r["score"]} for r in sorted_results
         ]
 
         return {

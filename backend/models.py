@@ -33,6 +33,7 @@ class JournalEntry(Base):
     emotion = Column(String(50), nullable=True)
     emotion_score = Column(Float, nullable=True)
     embedding = Column(Vector(384), nullable=True)  # Granite-embedding-30m-english dense embedding vector (384 dimensions)
+    summary=Column(Text, nullable=True)
 
     # Relationship to user
     user = relationship("User", back_populates="entries")
@@ -70,6 +71,7 @@ class Cluster(Base):
     persistence = Column(Float, nullable=True)
     centroid_entry_id = Column(Integer, nullable=True)
     topic_label = Column(Text, nullable=True)
+    summary = Column(Text, nullable=True)
 
     # Relationships
     run = relationship("ClusteringRun", back_populates="clusters")
