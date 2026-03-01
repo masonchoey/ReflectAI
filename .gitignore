@@ -97,3 +97,5 @@ backend/condensed_tree_*.png
 # But DO NOT ignore README.md
 !README.md
 
+.vercel
+.env*.local
