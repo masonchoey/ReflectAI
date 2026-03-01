@@ -123,6 +123,12 @@ header p {
   gap: 0.75rem;
 }
 
+header .admin-panel {
+  margin-top: 1rem;
+  justify-content: center;
+  flex-wrap: wrap;
+}
+
 .admin-bulk-analyze-input {
   width: 200px;
   padding: 0.5rem 0.75rem;
@@ -936,6 +942,23 @@ header p {
   z-index: 10;
 }
 
+.cluster-tooltip--compact {
+  padding: 0.4rem 0.75rem 0.5rem;
+}
+
+.cluster-tooltip--compact .cluster-tooltip-title {
+  margin-bottom: 0.15rem;
+}
+
+.cluster-tooltip--compact .cluster-tooltip-body {
+  margin-top: 0;
+}
+
+.cluster-tooltip--compact .cluster-memberships-list {
+  margin-top: 0.25rem;
+  gap: 0.25rem;
+}
+
 .cluster-tooltip-title {
   font-family: 'DM Sans', sans-serif;
   font-size: 0.9rem;
@@ -1012,6 +1035,38 @@ header p {
   justify-content: space-between;
   align-items: center;
   margin-bottom: 0.75rem;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.legend-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.legend-toggle-stats {
+  padding: 0.4rem 0.8rem;
+  font-size: 0.85rem;
+  font-family: 'DM Sans', sans-serif;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.legend-toggle-stats:hover {
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  border-color: var(--accent);
+}
+
+.legend-toggle-stats.active {
+  background: rgba(59, 130, 246, 0.15);
+  border-color: rgba(59, 130, 246, 0.4);
+  color: var(--text-primary);
 }
 
 .cluster-legend h3 {

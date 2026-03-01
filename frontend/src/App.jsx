@@ -892,37 +892,37 @@ function App() {
           <button onClick={handleSignOut} className="signout-button">
             Sign Out
           </button>
-          {user.email === 'mason@choey.com' && (
-            <div className="admin-panel">
-              <button
-                onClick={handleBulkAnalyze}
-                disabled={bulkAnalyzing}
-                className="admin-bulk-analyze-button"
-                title="Admin: Run sentiment analysis on unanalyzed entries for the specified user (or you if blank)"
-              >
-                {bulkAnalyzing ? '⚙ Analyzing…' : '⚙ Bulk Analyze'}
-              </button>
-              {bulkAnalyzeProgress && (
-                <span className="admin-bulk-progress">
-                  {bulkAnalyzeProgress.done
-                    ? bulkAnalyzeProgress.total === 0
-                      ? 'All entries already analyzed'
-                      : `Done — ${bulkAnalyzeProgress.completed}/${bulkAnalyzeProgress.total} analyzed${bulkAnalyzeProgress.failed > 0 ? `, ${bulkAnalyzeProgress.failed} failed` : ''}`
-                    : `${bulkAnalyzeProgress.completed}/${bulkAnalyzeProgress.total} analyzed…`}
-                </span>
-              )}
-              <input
-                type="text"
-                value={bulkAnalyzeTarget}
-                onChange={(e) => setBulkAnalyzeTarget(e.target.value)}
-                placeholder="User ID or email (blank = you)"
-                disabled={bulkAnalyzing}
-                className="admin-bulk-analyze-input"
-                aria-label="User ID or email for bulk analyze"
-              />
-            </div>
-          )}
         </div>
+        {user.email === 'mason@choey.com' && (
+          <div className="admin-panel">
+            <button
+              onClick={handleBulkAnalyze}
+              disabled={bulkAnalyzing}
+              className="admin-bulk-analyze-button"
+              title="Admin: Run sentiment analysis on unanalyzed entries for the specified user (or you if blank)"
+            >
+              {bulkAnalyzing ? '⚙ Analyzing…' : '⚙ Bulk Analyze'}
+            </button>
+            {bulkAnalyzeProgress && (
+              <span className="admin-bulk-progress">
+                {bulkAnalyzeProgress.done
+                  ? bulkAnalyzeProgress.total === 0
+                    ? 'All entries already analyzed'
+                    : `Done — ${bulkAnalyzeProgress.completed}/${bulkAnalyzeProgress.total} analyzed${bulkAnalyzeProgress.failed > 0 ? `, ${bulkAnalyzeProgress.failed} failed` : ''}`
+                  : `${bulkAnalyzeProgress.completed}/${bulkAnalyzeProgress.total} analyzed…`}
+              </span>
+            )}
+            <input
+              type="text"
+              value={bulkAnalyzeTarget}
+              onChange={(e) => setBulkAnalyzeTarget(e.target.value)}
+              placeholder="User ID or email (blank = you)"
+              disabled={bulkAnalyzing}
+              className="admin-bulk-analyze-input"
+              aria-label="User ID or email for bulk analyze"
+            />
+          </div>
+        )}
       </header>
 
       {error && <div className="error">{error}</div>}
@@ -1663,6 +1663,8 @@ function ClusterVisualization({ data, hoveredPoint, onPointHover }) {
   const [transform, setTransform] = useState({ x: 0, y: 0, scale: 1 })
   const [selectedClusterId, setSelectedClusterId] = useState(null)
   const [clusterPanelOpen, setClusterPanelOpen] = useState(false)
+  const [showDetailedClusteringStats, setShowDetailedClusteringStats] = useState(false)
+  const [pinnedPoint, setPinnedPoint] = useState(null)
   const isPanningRef = useRef(false)
   const lastPosRef = useRef({ x: 0, y: 0 })
   const transformRef = useRef(transform)
@@ -1854,14 +1856,18 @@ function ClusterVisualization({ data, hoveredPoint, onPointHover }) {
   }
 
   const tooltipLayout = (() => {
-    if (!hoveredPoint) return null
-    const base = transformPoint(hoveredPoint.x, hoveredPoint.y)
+    const activePoint = pinnedPoint || hoveredPoint
+    if (!activePoint) return null
+    const base = transformPoint(activePoint.x, activePoint.y)
     const tooltipWidth = 280
-    // Calculate height based on number of memberships
-    const memberships = hoveredPoint.all_memberships || []
+    // Number of membership rows we actually show (1 when details off, else all)
+    const memberships = activePoint.all_memberships || []
+    const visibleCount = memberships.length > 0
+      ? (showDetailedClusteringStats ? memberships.length : 1)
+      : 1
     const baseHeight = 60
     const membershipHeight = 28
-    const tooltipHeight = baseHeight + (memberships.length * membershipHeight)
+    const tooltipHeight = (visibleCount <= 1 ? 44 : baseHeight) + (visibleCount * membershipHeight)
     let x = base.x + 12
     let y = base.y - tooltipHeight - 12
 
@@ -1880,6 +1886,8 @@ function ClusterVisualization({ data, hoveredPoint, onPointHover }) {
   })()
 
   const handleMouseDown = (event) => {
+    if (event.target.getAttribute?.('data-entry-id') != null) return
+    setPinnedPoint(null)
     isPanningRef.current = true
     lastPosRef.current = { x: event.clientX, y: event.clientY }
   }
@@ -1970,13 +1978,19 @@ function ClusterVisualization({ data, hoveredPoint, onPointHover }) {
           return (
             <circle
               key={point.entry_id}
+              data-entry-id={point.entry_id}
               cx={pos.x}
               cy={pos.y}
-              r={isHovered ? 8 : 5}
+              r={isHovered || pinnedPoint?.entry_id === point.entry_id ? 8 : 5}
               fill={color}
-              stroke={isHovered ? '#fff' : 'none'}
-              strokeWidth={isHovered ? 2 : 0}
+              stroke={isHovered || pinnedPoint?.entry_id === point.entry_id ? '#fff' : 'none'}
+              strokeWidth={isHovered || pinnedPoint?.entry_id === point.entry_id ? 2 : 0}
               opacity={opacity}
+              onMouseDown={(e) => e.stopPropagation()}
+              onClick={() => {
+                if (!isHoverable) return
+                setPinnedPoint(prev => prev?.entry_id === point.entry_id ? null : point)
+              }}
               onMouseEnter={() => {
                 if (isHoverable) {
                   onPointHover(point)
@@ -1997,9 +2011,16 @@ function ClusterVisualization({ data, hoveredPoint, onPointHover }) {
         })}
       </svg>
 
-      {hoveredPoint && tooltipLayout && (
+      {(pinnedPoint || hoveredPoint) && tooltipLayout && (() => {
+        const activePoint = pinnedPoint || hoveredPoint
+        const memberships = activePoint.all_memberships || []
+        const visibleCount = memberships.length > 0
+          ? (showDetailedClusteringStats ? memberships.length : 1)
+          : 1
+        const isCompact = visibleCount <= 1
+        return (
         <div
-          className="cluster-tooltip"
+          className={`cluster-tooltip ${isCompact ? 'cluster-tooltip--compact' : ''}`}
           style={{
             left: tooltipLayout.x,
             top: tooltipLayout.y,
@@ -2008,12 +2029,15 @@ function ClusterVisualization({ data, hoveredPoint, onPointHover }) {
           }}
         >
           <div className="cluster-tooltip-title">
-            {hoveredPoint.title || 'Untitled Entry'}
+            {activePoint.title || 'Untitled Entry'}
           </div>
           <div className="cluster-tooltip-body">
-            {hoveredPoint.all_memberships && hoveredPoint.all_memberships.length > 0 ? (
+            {activePoint.all_memberships && activePoint.all_memberships.length > 0 ? (
               <div className="cluster-memberships-list">
-                {hoveredPoint.all_memberships.map((membership, idx) => (
+                {(showDetailedClusteringStats
+                  ? activePoint.all_memberships
+                  : activePoint.all_memberships.filter(m => m.is_primary)
+                ).map((membership, idx) => (
                   <div 
                     key={idx} 
                     className={`cluster-membership-tag ${membership.is_primary ? 'primary' : 'secondary'}`}
@@ -2031,29 +2055,40 @@ function ClusterVisualization({ data, hoveredPoint, onPointHover }) {
             ) : (
               <div className="cluster-membership-tag primary">
                 <span className="membership-indicator">★</span>
-                <span className="membership-name">{hoveredPoint.cluster_name}</span>
+                <span className="membership-name">{activePoint.cluster_name}</span>
                 <span className="membership-probability">
-                  {(hoveredPoint.membership_probability * 100).toFixed(0)}%
+                  {(activePoint.membership_probability * 100).toFixed(0)}%
                 </span>
               </div>
             )}
           </div>
         </div>
-      )}
+        )
+      })()}
 
       {/* Legend */}
       <div className="cluster-legend">
         <div className="legend-header">
           <h3>Clusters</h3>
-          {selectedClusterId !== null && (
+          <div className="legend-header-actions">
             <button
-              className="legend-clear-filter"
-              onClick={() => { setSelectedClusterId(null); setClusterPanelOpen(false) }}
               type="button"
+              className={`legend-toggle-stats ${showDetailedClusteringStats ? 'active' : ''}`}
+              onClick={() => setShowDetailedClusteringStats(s => !s)}
+              aria-pressed={showDetailedClusteringStats}
             >
-              Clear Filter
+              Show detailed clustering stats
             </button>
-          )}
+            {selectedClusterId !== null && (
+              <button
+                className="legend-clear-filter"
+                onClick={() => { setSelectedClusterId(null); setClusterPanelOpen(false) }}
+                type="button"
+              >
+                Clear Filter
+              </button>
+            )}
+          </div>
         </div>
         <div className="legend-items">
           {data.clusters.map((cluster) => {
