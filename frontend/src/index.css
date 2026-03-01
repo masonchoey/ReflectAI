@@ -123,6 +123,26 @@ header p {
   gap: 0.75rem;
 }
 
+.admin-bulk-analyze-input {
+  width: 200px;
+  padding: 0.5rem 0.75rem;
+  font-size: 0.85rem;
+  font-family: 'DM Sans', sans-serif;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  color: var(--text-primary);
+}
+
+.admin-bulk-analyze-input::placeholder {
+  color: var(--text-secondary);
+}
+
+.admin-bulk-analyze-input:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
 .admin-bulk-analyze-button {
   padding: 0.5rem 1rem;
   font-family: 'DM Sans', sans-serif;

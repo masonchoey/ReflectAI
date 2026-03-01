@@ -1,7 +1,7 @@
 import os
 import math
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Depends, HTTPException, status, Response
+from fastapi import FastAPI, Depends, HTTPException, status, Response, Body
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
@@ -24,7 +24,7 @@ from schemas import (
     ClusterVisualizationResponse, ClusterMembership, EntryClusterMembershipsResponse,
     ClusterEntriesResponse, EntryClusterInfo,
     TaskStatusResponse, ClusteringRecommendResponse, RecommendedClusterParams,
-    BulkAnalyzeResponse
+    BulkAnalyzeResponse, BulkAnalyzeRequest
 )
 from hdbscan_clustering import analyze_entry_lengths
 from tasks import (
@@ -428,16 +428,29 @@ ADMIN_EMAIL = "mason@choey.com"
 
 @app.post("/admin/bulk-analyze", response_model=BulkAnalyzeResponse)
 def bulk_analyze_emotions(
+    body: BulkAnalyzeRequest = Body(default_factory=BulkAnalyzeRequest),
     current_user: User = Depends(require_auth),
     db: Session = Depends(get_db)
 ):
-    """Queue emotion analysis for all entries belonging to the current user that are
-    missing emotion data (emotion or emotion_score is NULL). Admin-only endpoint."""
+    """Queue emotion analysis for all entries belonging to a user that are
+    missing emotion data. Admin-only. Specify user_id or email to target another user;
+    omit both to use the current user."""
     if current_user.email != ADMIN_EMAIL:
         raise HTTPException(status_code=403, detail="Forbidden")
 
+    if body.user_id is not None:
+        target_user = db.query(User).filter(User.id == body.user_id).first()
+        if target_user is None:
+            raise HTTPException(status_code=404, detail=f"User with id {body.user_id} not found")
+    elif body.email is not None and body.email.strip():
+        target_user = db.query(User).filter(User.email == body.email.strip()).first()
+        if target_user is None:
+            raise HTTPException(status_code=404, detail=f"User with email {body.email!r} not found")
+    else:
+        target_user = current_user
+
     entries = db.query(JournalEntry).filter(
-        JournalEntry.user_id == current_user.id,
+        JournalEntry.user_id == target_user.id,
         (JournalEntry.emotion == None) | (JournalEntry.emotion_score == None)
     ).all()
 

@@ -105,6 +105,7 @@ function App() {
   // Admin bulk-analyze state
   const [bulkAnalyzing, setBulkAnalyzing] = useState(false)
   const [bulkAnalyzeProgress, setBulkAnalyzeProgress] = useState(null)
+  const [bulkAnalyzeTarget, setBulkAnalyzeTarget] = useState('')
 
   // Auth state
   const [user, setUser] = useState(null)
@@ -685,11 +686,27 @@ function App() {
       setBulkAnalyzing(true)
       setBulkAnalyzeProgress({ queued: 0, completed: 0, failed: 0, total: 0 })
 
+      const trimmed = bulkAnalyzeTarget.trim()
+      const body = {}
+      if (trimmed !== '') {
+        const asNum = parseInt(trimmed, 10)
+        if (String(asNum) === trimmed) {
+          body.user_id = asNum
+        } else {
+          body.email = trimmed
+        }
+      }
+
       const response = await fetch(`${API_URL}/admin/bulk-analyze`, {
         method: 'POST',
-        headers: getAuthHeaders()
+        headers: getAuthHeaders(),
+        body: JSON.stringify(body)
       })
-      if (!response.ok) throw new Error('Failed to queue bulk analysis')
+      if (!response.ok) {
+        const errData = await response.json().catch(() => ({}))
+        const msg = typeof errData.detail === 'string' ? errData.detail : 'Failed to queue bulk analysis'
+        throw new Error(msg)
+      }
 
       const data = await response.json()
       const { task_ids, entry_ids, queued } = data
@@ -881,7 +898,7 @@ function App() {
                 onClick={handleBulkAnalyze}
                 disabled={bulkAnalyzing}
                 className="admin-bulk-analyze-button"
-                title="Admin: Run sentiment analysis on all unanalyzed entries"
+                title="Admin: Run sentiment analysis on unanalyzed entries for the specified user (or you if blank)"
               >
                 {bulkAnalyzing ? '⚙ Analyzing…' : '⚙ Bulk Analyze'}
               </button>
@@ -894,6 +911,15 @@ function App() {
                     : `${bulkAnalyzeProgress.completed}/${bulkAnalyzeProgress.total} analyzed…`}
                 </span>
               )}
+              <input
+                type="text"
+                value={bulkAnalyzeTarget}
+                onChange={(e) => setBulkAnalyzeTarget(e.target.value)}
+                placeholder="User ID or email (blank = you)"
+                disabled={bulkAnalyzing}
+                className="admin-bulk-analyze-input"
+                aria-label="User ID or email for bulk analyze"
+              />
             </div>
           )}
         </div>

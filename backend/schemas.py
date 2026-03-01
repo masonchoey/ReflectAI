@@ -218,6 +218,11 @@ class TaskStatusResponse(BaseModel):
 
 
 # Admin schemas
+class BulkAnalyzeRequest(BaseModel):
+    user_id: Optional[int] = None
+    email: Optional[str] = None
+
+
 class BulkAnalyzeResponse(BaseModel):
     queued: int
     task_ids: List[str]
