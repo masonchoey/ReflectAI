@@ -23,7 +23,6 @@ primary_region = 'lax'
 [[mounts]]
   source = 'reflectai_worker_models'
   destination = '/data/huggingface'
-  initial_size = '3gb'
 
 [[vm]]
   memory = '2gb'
