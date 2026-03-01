@@ -1818,7 +1818,7 @@ function ClusterVisualization({ data, hoveredPoint, onPointHover }) {
   // Generate colors for clusters
   const clusterColors = {}
   const uniqueClusters = [...new Set(data.points.map(p => p.cluster_id))].sort((a, b) => {
-    // Put noise (-1) at the end
+    // Put noise (-1) at the end.
     if (a === -1) return 1
     if (b === -1) return -1
     return a - b
