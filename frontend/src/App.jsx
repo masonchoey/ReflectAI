@@ -1,13 +1,12 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 
-// When the app is opened from localhost, always use the local backend (Docker or uvicorn).
-// Otherwise use VITE_API_URL or the production Fly URL.
-const isLocalHost =
-  typeof window !== 'undefined' &&
-  (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1')
-const API_URL = isLocalHost
-  ? 'http://localhost:8000'
-  : (import.meta.env.VITE_API_URL || 'https://reflectai-api-icy-dust-4243.fly.dev')
+// Prefer Vite env; fall back based on environment
+// In production (Fly), use the Fly API URL; in development, use localhost
+const API_URL = import.meta.env.VITE_API_URL || (
+  window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
+    ? 'http://localhost:8001'
+    : 'https://reflectai-api-icy-dust-4243.fly.dev'
+)
 const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID || ''
 
 const CLUSTER_PARAMS_STORAGE_KEY = 'reflectai_cluster_params'

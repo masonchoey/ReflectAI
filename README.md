@@ -78,7 +78,7 @@ cd backend
 uvicorn main:app --reload
 ```
 
-The API will be available at `http://localhost:8000`
+The API will be available at `http://localhost:8001`
 
 ### Frontend Setup
 
@@ -120,8 +120,8 @@ docker-compose up --build
 
 3. **Access the application**:
    - Frontend: `http://localhost`
-   - Backend API: `http://localhost:8000`
-   - API Docs: `http://localhost:8000/docs`
+   - Backend API: `http://localhost:8001`
+   - API Docs: `http://localhost:8001/docs`
 
 #### Docker Services
 
@@ -158,9 +158,9 @@ docker-compose up --build frontend
 
 If you run the frontend on localhost (e.g. `npm run dev` on port 5173) but don't see requests or data in the Docker backend:
 
-1. **The app always uses the local API when opened from localhost.** If you open the app at `http://localhost:5173` or `http://127.0.0.1:5173`, the frontend sends all API requests to `http://localhost:8000` (your Docker backend), regardless of any `VITE_API_URL` set for production.
+1. **The app always uses the local API when opened from localhost.** If you open the app at `http://localhost:5173` or `http://127.0.0.1:5173`, the frontend sends all API requests to `http://localhost:8001` (your Docker backend), regardless of any `VITE_API_URL` set for production.
 
-2. **Verify the backend is receiving requests:** Ensure only the Docker backend is using port 8000 (stop any local `uvicorn`). Run `docker-compose up backend`, then in another terminal run `docker compose logs -f backend`. In the browser, open DevTools → Network and use the app (sign in, load entries). You should see requests to `http://localhost:8000/...` and log lines in the backend container.
+2. **Verify the backend is receiving requests:** Ensure only the Docker backend is using port 8001 (stop any local `uvicorn`). Run `docker-compose up backend`, then in another terminal run `docker compose logs -f backend`. In the browser, open DevTools → Network and use the app (sign in, load entries). You should see requests to `http://localhost:8001/...` and log lines in the backend container.
 
 3. **If requests still go to another host:** Hard-refresh the page (Ctrl+Shift+R / Cmd+Shift+R) and restart the frontend dev server so the updated API URL logic is used.
 
@@ -174,7 +174,7 @@ If you run the frontend on localhost (e.g. `npm run dev` on port 5173) but don't
 | `JWT_SECRET_KEY` | Secret key for signing JWT tokens | Yes |
 | `GOOGLE_CLIENT_ID` | Google OAuth2 Client ID | Yes |
 | `HF_HOME` | Hugging Face cache directory (defaults to `~/.cache/huggingface`) | No |
-| `VITE_API_URL` | Backend API URL for the frontend (used only when app is **not** opened from localhost) | No |
+| `VITE_API_URL` | Backend API URL for the frontend | No (defaults to `http://localhost:8001`) |
 | `VITE_GOOGLE_CLIENT_ID` | Google OAuth2 Client ID (for frontend) | Yes |
 
 ## API Endpoints
