@@ -98,6 +98,10 @@ function App() {
   const [umapNNeighbors, setUmapNNeighbors] = useState(8)  // Reduced to 8 for more local clusters
   const [umapMinDist, setUmapMinDist] = useState(0.0)
   
+  // Recommended settings state
+  const [recommendLoading, setRecommendLoading] = useState(false)
+  const [recommendReasoning, setRecommendReasoning] = useState(null)
+
   // Auth state
   const [user, setUser] = useState(null)
   const [token, setToken] = useState(() => localStorage.getItem('auth_token'))
@@ -358,6 +362,37 @@ function App() {
     }
   }
 
+  const fetchRecommendedSettings = async () => {
+    setRecommendLoading(true)
+    setRecommendReasoning(null)
+    try {
+      const response = await fetch(`${API_URL}/clustering/recommend`, {
+        headers: getAuthHeaders(),
+      })
+      if (!response.ok) {
+        if (response.status === 401) {
+          handleSignOut()
+          return
+        }
+        throw new Error('Failed to fetch recommended settings')
+      }
+      const data = await response.json()
+      const p = data.params
+      setMinClusterSize(p.min_cluster_size)
+      setMinSamples(p.min_samples)
+      setMembershipThreshold(p.membership_threshold)
+      setClusterSelectionEpsilon(p.cluster_selection_epsilon)
+      setUmapNComponents(p.umap_n_components)
+      setUmapNNeighbors(p.umap_n_neighbors)
+      setUmapMinDist(p.umap_min_dist)
+      setRecommendReasoning(data.reasoning)
+    } catch (err) {
+      setRecommendReasoning('Could not load recommendations. Please try again.')
+    } finally {
+      setRecommendLoading(false)
+    }
+  }
+
   const runClustering = async () => {
     try {
       setRunningClustering(true)
@@ -393,7 +428,11 @@ function App() {
       const requestBody = {
         min_cluster_size: minClusterSize,
         min_samples: minSamples,
-        membership_threshold: membershipThreshold
+        membership_threshold: membershipThreshold,
+        cluster_selection_epsilon: clusterSelectionEpsilon,
+        umap_n_components: umapNComponents,
+        umap_n_neighbors: umapNNeighbors,
+        umap_min_dist: umapMinDist,
       }
       if (requestStartDate) requestBody.start_date = requestStartDate
       if (requestEndDate) requestBody.end_date = requestEndDate
@@ -987,6 +1026,18 @@ function App() {
                   <p className="parameters-description">
                     Adjust these parameters to fine-tune clustering results. HDBSCAN parameters control cluster formation, while UMAP parameters control dimensionality reduction before clustering.
                   </p>
+                  <div className="suggest-settings-row">
+                    <button
+                      onClick={fetchRecommendedSettings}
+                      disabled={recommendLoading}
+                      className="suggest-settings-btn"
+                    >
+                      {recommendLoading ? 'Analyzing…' : '✦ Suggest Settings'}
+                    </button>
+                    {recommendReasoning && (
+                      <p className="recommend-hint">{recommendReasoning}</p>
+                    )}
+                  </div>
                   
                   <div className="parameter-group">
                     <label htmlFor="min-cluster-size">
@@ -1222,6 +1273,18 @@ function App() {
                   <p className="parameters-description">
                     Adjust these parameters to fine-tune clustering results. HDBSCAN parameters control cluster formation, while UMAP parameters control dimensionality reduction before clustering.
                   </p>
+                  <div className="suggest-settings-row">
+                    <button
+                      onClick={fetchRecommendedSettings}
+                      disabled={recommendLoading}
+                      className="suggest-settings-btn"
+                    >
+                      {recommendLoading ? 'Analyzing…' : '✦ Suggest Settings'}
+                    </button>
+                    {recommendReasoning && (
+                      <p className="recommend-hint">{recommendReasoning}</p>
+                    )}
+                  </div>
                   
                   <div className="parameter-group">
                     <label htmlFor="min-cluster-size-2">

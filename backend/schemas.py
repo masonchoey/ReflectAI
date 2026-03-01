@@ -116,6 +116,22 @@ class ClusteringRunRequest(BaseModel):
     umap_min_dist: Optional[float] = None
 
 
+class RecommendedClusterParams(BaseModel):
+    min_cluster_size: int
+    min_samples: int
+    membership_threshold: float
+    cluster_selection_epsilon: float
+    umap_n_components: int
+    umap_n_neighbors: int
+    umap_min_dist: float
+
+
+class ClusteringRecommendResponse(BaseModel):
+    params: RecommendedClusterParams
+    reasoning: str
+    embedding_coverage: float
+
+
 class ClusteringRunResponse(BaseModel):
     id: int
     run_timestamp: datetime

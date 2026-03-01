@@ -1,4 +1,5 @@
 import os
+import math
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Depends, HTTPException, status, Response
 from fastapi.middleware.cors import CORSMiddleware
@@ -22,8 +23,9 @@ from schemas import (
     ClusteringRunRequest, ClusteringRunResponse, ClusterInfoResponse, ClusterPoint, 
     ClusterVisualizationResponse, ClusterMembership, EntryClusterMembershipsResponse,
     ClusterEntriesResponse, EntryClusterInfo,
-    TaskStatusResponse
+    TaskStatusResponse, ClusteringRecommendResponse, RecommendedClusterParams
 )
+from hdbscan_clustering import analyze_entry_lengths
 from tasks import (
     vectorize_entry,
     vectorize_all_entries,
@@ -609,6 +611,104 @@ def create_clustering_run(
             status_code=500,
             detail=f"Failed to queue clustering task: {str(e)}"
         )
+
+
+@app.get("/clustering/recommend", response_model=ClusteringRecommendResponse)
+def recommend_clustering_params(
+    current_user: User = Depends(require_auth),
+    db: Session = Depends(get_db)
+):
+    """Analyze the user's journal entries and return heuristically recommended clustering parameters."""
+    entries = db.query(JournalEntry).filter(
+        JournalEntry.user_id == current_user.id,
+        JournalEntry.content.isnot(None)
+    ).all()
+
+    n = len(entries)
+
+    if n < 5:
+        return ClusteringRecommendResponse(
+            params=RecommendedClusterParams(
+                min_cluster_size=2,
+                min_samples=1,
+                membership_threshold=0.05,
+                cluster_selection_epsilon=0.0,
+                umap_n_components=5,
+                umap_n_neighbors=5,
+                umap_min_dist=0.0,
+            ),
+            reasoning=f"Not enough entries ({n}) for data-driven recommendations. Using defaults — add more entries for better suggestions.",
+            embedding_coverage=0.0,
+        )
+
+    length_stats = analyze_entry_lengths(entries)
+    avg_words = float(length_stats["word_count"]["mean"])
+    std_words = float(length_stats["word_count"]["std"])
+    cv = std_words / avg_words if avg_words > 0 else 0.0
+
+    emotions = [e.emotion for e in entries if e.emotion]
+    distinct_emotions = len(set(emotions))
+    n_embedded = sum(1 for e in entries if e.embedding is not None)
+    embedding_coverage = n_embedded / n if n > 0 else 0.0
+
+    # --- Heuristic formulas ---
+
+    # min_cluster_size: ~5% of entries; scale down for high emotion variety
+    base_mcs = max(2, round(n * 0.05))
+    if distinct_emotions >= 6:
+        emotion_scale = 0.7
+    elif distinct_emotions >= 4:
+        emotion_scale = 0.85
+    else:
+        emotion_scale = 1.0
+    min_cluster_size = max(2, min(20, round(base_mcs * emotion_scale)))
+
+    # min_samples: 1 for clean data, 2 for high-variance/noisy journals
+    min_samples = 2 if cv > 0.8 else 1
+
+    # membership_threshold: low to allow multi-cluster membership for diverse journals
+    membership_threshold = 0.05 if (distinct_emotions >= 5 or cv > 0.8) else 0.1
+
+    # umap_n_neighbors: scales with sqrt(n) — more neighbors = more global structure
+    umap_n_neighbors = max(5, min(50, round(math.sqrt(n) * 1.5)))
+
+    # umap_n_components: log-scaled — more entries benefit from more dimensions
+    umap_n_components = max(5, min(30, round(math.log2(max(n, 2)) * 1.5)))
+
+    # cluster_selection_epsilon: small positive value merges nearby micro-clusters for sparse data
+    cluster_selection_epsilon = 0.1 if n < 20 else 0.0
+
+    # umap_min_dist: always 0.0 for tightest text clusters
+    umap_min_dist = 0.0
+
+    # Build human-readable reasoning
+    reasoning_parts = [f"Based on {n} entries"]
+    reasoning_parts.append(f"averaging {round(avg_words)} words")
+    if distinct_emotions > 0:
+        emotion_frac = len(emotions) / n
+        reasoning_parts.append(
+            f"{distinct_emotions} distinct emotion{'s' if distinct_emotions != 1 else ''} detected"
+            f" across {round(emotion_frac * 100)}% of entries"
+        )
+    if cv > 0.8:
+        reasoning_parts.append("high length variance suggests noisy/diverse writing")
+    if embedding_coverage < 0.5:
+        reasoning_parts.append(f"only {round(embedding_coverage * 100)}% of entries have embeddings — run 'Embed All' for best results")
+    reasoning = ". ".join(reasoning_parts) + "."
+
+    return ClusteringRecommendResponse(
+        params=RecommendedClusterParams(
+            min_cluster_size=min_cluster_size,
+            min_samples=min_samples,
+            membership_threshold=round(membership_threshold, 2),
+            cluster_selection_epsilon=round(cluster_selection_epsilon, 1),
+            umap_n_components=umap_n_components,
+            umap_n_neighbors=umap_n_neighbors,
+            umap_min_dist=umap_min_dist,
+        ),
+        reasoning=reasoning,
+        embedding_coverage=round(embedding_coverage, 3),
+    )
 
 
 @app.get("/clustering/runs", response_model=List[ClusteringRunResponse])
