@@ -215,3 +215,10 @@ class TaskStatusResponse(BaseModel):
     status: str
     result: Optional[dict] = None
     error: Optional[str] = None
+
+
+# Admin schemas
+class BulkAnalyzeResponse(BaseModel):
+    queued: int
+    task_ids: List[str]
+    entry_ids: List[int]

@@ -23,7 +23,8 @@ from schemas import (
     ClusteringRunRequest, ClusteringRunResponse, ClusterInfoResponse, ClusterPoint, 
     ClusterVisualizationResponse, ClusterMembership, EntryClusterMembershipsResponse,
     ClusterEntriesResponse, EntryClusterInfo,
-    TaskStatusResponse, ClusteringRecommendResponse, RecommendedClusterParams
+    TaskStatusResponse, ClusteringRecommendResponse, RecommendedClusterParams,
+    BulkAnalyzeResponse
 )
 from hdbscan_clustering import analyze_entry_lengths
 from tasks import (
@@ -419,6 +420,40 @@ def analyze_emotion(
         task_id=task.id,
         status=task.state,
         result=None
+    )
+
+
+ADMIN_EMAIL = "mason@choey.com"
+
+
+@app.post("/admin/bulk-analyze", response_model=BulkAnalyzeResponse)
+def bulk_analyze_emotions(
+    current_user: User = Depends(require_auth),
+    db: Session = Depends(get_db)
+):
+    """Queue emotion analysis for all entries belonging to the current user that are
+    missing emotion data (emotion or emotion_score is NULL). Admin-only endpoint."""
+    if current_user.email != ADMIN_EMAIL:
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+    entries = db.query(JournalEntry).filter(
+        JournalEntry.user_id == current_user.id,
+        (JournalEntry.emotion == None) | (JournalEntry.emotion_score == None)
+    ).all()
+
+    task_ids = []
+    entry_ids = []
+    for entry in entries:
+        task = analyze_emotion_task.delay(entry.id)
+        task_ids.append(task.id)
+        entry_ids.append(entry.id)
+
+    ensure_worker_running()
+
+    return BulkAnalyzeResponse(
+        queued=len(entries),
+        task_ids=task_ids,
+        entry_ids=entry_ids
     )
 
 

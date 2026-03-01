@@ -102,6 +102,10 @@ function App() {
   const [recommendLoading, setRecommendLoading] = useState(false)
   const [recommendReasoning, setRecommendReasoning] = useState(null)
 
+  // Admin bulk-analyze state
+  const [bulkAnalyzing, setBulkAnalyzing] = useState(false)
+  const [bulkAnalyzeProgress, setBulkAnalyzeProgress] = useState(null)
+
   // Auth state
   const [user, setUser] = useState(null)
   const [token, setToken] = useState(() => localStorage.getItem('auth_token'))
@@ -676,6 +680,75 @@ function App() {
     }
   }
 
+  const handleBulkAnalyze = async () => {
+    try {
+      setBulkAnalyzing(true)
+      setBulkAnalyzeProgress({ queued: 0, completed: 0, failed: 0, total: 0 })
+
+      const response = await fetch(`${API_URL}/admin/bulk-analyze`, {
+        method: 'POST',
+        headers: getAuthHeaders()
+      })
+      if (!response.ok) throw new Error('Failed to queue bulk analysis')
+
+      const data = await response.json()
+      const { task_ids, entry_ids, queued } = data
+
+      if (queued === 0) {
+        setBulkAnalyzeProgress({ queued: 0, completed: 0, failed: 0, total: 0, done: true })
+        setBulkAnalyzing(false)
+        return
+      }
+
+      setBulkAnalyzeProgress({ queued, completed: 0, failed: 0, total: queued, done: false })
+
+      let completed = 0
+      let failed = 0
+
+      const pollTask = (taskId, entryId) => new Promise((resolve) => {
+        const poll = async () => {
+          try {
+            const statusRes = await fetch(`${API_URL}/tasks/${taskId}`, { headers: getAuthHeaders() })
+            if (!statusRes.ok) { failed++; setBulkAnalyzeProgress(p => ({ ...p, failed })); resolve(); return }
+            const status = await statusRes.json()
+
+            if (status.status === 'SUCCESS' && status.result) {
+              const result = status.result
+              setEntries(prev => prev.map(e =>
+                e.id === entryId
+                  ? { ...e, emotion: result.emotion, emotion_score: result.emotion_score }
+                  : e
+              ))
+              setEmotionResults(prev => ({ ...prev, [entryId]: result.all_emotions }))
+              completed++
+              setBulkAnalyzeProgress(p => ({ ...p, completed }))
+              resolve()
+            } else if (status.status === 'FAILURE' || status.status === 'REVOKED') {
+              failed++
+              setBulkAnalyzeProgress(p => ({ ...p, failed }))
+              resolve()
+            } else {
+              setTimeout(poll, 2000)
+            }
+          } catch {
+            failed++
+            setBulkAnalyzeProgress(p => ({ ...p, failed }))
+            resolve()
+          }
+        }
+        setTimeout(poll, 1000)
+      })
+
+      await Promise.all(task_ids.map((taskId, i) => pollTask(taskId, entry_ids[i])))
+      setBulkAnalyzeProgress(p => ({ ...p, done: true }))
+      setBulkAnalyzing(false)
+    } catch (err) {
+      setError('Bulk analysis failed. Please try again.')
+      setBulkAnalyzing(false)
+      setBulkAnalyzeProgress(null)
+    }
+  }
+
   const toggleEmotionBreakdown = (entryId) => {
     setExpandedEmotionEntries(prev => ({
       ...prev,
@@ -786,6 +859,9 @@ function App() {
         
         <div className="user-menu">
           <div className="user-info">
+            {user.email === 'mason@choey.com' && (
+              <span className="admin-badge">ADMIN</span>
+            )}
             {user.picture && (
               <img 
                 src={user.picture} 
@@ -799,6 +875,27 @@ function App() {
           <button onClick={handleSignOut} className="signout-button">
             Sign Out
           </button>
+          {user.email === 'mason@choey.com' && (
+            <div className="admin-panel">
+              <button
+                onClick={handleBulkAnalyze}
+                disabled={bulkAnalyzing}
+                className="admin-bulk-analyze-button"
+                title="Admin: Run sentiment analysis on all unanalyzed entries"
+              >
+                {bulkAnalyzing ? '⚙ Analyzing…' : '⚙ Bulk Analyze'}
+              </button>
+              {bulkAnalyzeProgress && (
+                <span className="admin-bulk-progress">
+                  {bulkAnalyzeProgress.done
+                    ? bulkAnalyzeProgress.total === 0
+                      ? 'All entries already analyzed'
+                      : `Done — ${bulkAnalyzeProgress.completed}/${bulkAnalyzeProgress.total} analyzed${bulkAnalyzeProgress.failed > 0 ? `, ${bulkAnalyzeProgress.failed} failed` : ''}`
+                    : `${bulkAnalyzeProgress.completed}/${bulkAnalyzeProgress.total} analyzed…`}
+                </span>
+              )}
+            </div>
+          )}
         </div>
       </header>
 
@@ -912,32 +1009,53 @@ function App() {
                         
                         {entry.emotion && (
                           <div className="emotion-display">
-                            <div className="primary-emotion">
+                            <button
+                              type="button"
+                              className="emotion-dropdown-trigger"
+                              onClick={() => {
+                                const next = !expandedEmotionEntries[entry.id]
+                                toggleEmotionBreakdown(entry.id)
+                                if (next && !emotionResults[entry.id] && analyzingId !== entry.id) {
+                                  handleAnalyzeEmotion(entry.id)
+                                }
+                              }}
+                              aria-expanded={!!expandedEmotionEntries[entry.id]}
+                              aria-label="Toggle emotion breakdown"
+                            >
                               <span className="emotion-emoji">{getEmotionEmoji(entry.emotion)}</span>
                               <span className="emotion-label">{entry.emotion}</span>
                               <span className="emotion-confidence">
                                 {(entry.emotion_score * 100).toFixed(1)}% confidence
                               </span>
-                            </div>
+                              <span className={`emotion-chevron ${expandedEmotionEntries[entry.id] ? 'open' : ''}`} aria-hidden>▼</span>
+                            </button>
                             
-                            {emotionResults[entry.id] && expandedEmotionEntries[entry.id] && (
+                            {expandedEmotionEntries[entry.id] && (
                               <div className="emotion-breakdown">
-                                <span className="breakdown-label">Top emotions:</span>
-                                <div className="emotion-bars">
-                                  {emotionResults[entry.id].slice(0, 5).map((emotion, idx) => (
-                                    <div key={idx} className="emotion-bar-item">
-                                      <span className="bar-emoji">{getEmotionEmoji(emotion.label)}</span>
-                                      <span className="bar-label">{emotion.label}</span>
-                                      <div className="bar-container">
-                                        <div 
-                                          className="bar-fill"
-                                          style={{ width: `${emotion.score * 100}%` }}
-                                        />
-                                      </div>
-                                      <span className="bar-score">{(emotion.score * 100).toFixed(1)}%</span>
+                                {emotionResults[entry.id] ? (
+                                  <>
+                                    <span className="breakdown-label">Top emotions:</span>
+                                    <div className="emotion-bars">
+                                      {emotionResults[entry.id].slice(0, 5).map((emotion, idx) => (
+                                        <div key={idx} className="emotion-bar-item">
+                                          <span className="bar-emoji">{getEmotionEmoji(emotion.label)}</span>
+                                          <span className="bar-label">{emotion.label}</span>
+                                          <div className="bar-container">
+                                            <div 
+                                              className="bar-fill"
+                                              style={{ width: `${emotion.score * 100}%` }}
+                                            />
+                                          </div>
+                                          <span className="bar-score">{(emotion.score * 100).toFixed(1)}%</span>
+                                        </div>
+                                      ))}
                                     </div>
-                                  ))}
-                                </div>
+                                  </>
+                                ) : (
+                                  <span className="breakdown-loading">
+                                    {analyzingId === entry.id ? 'Loading…' : 'Run analysis to see top emotions'}
+                                  </span>
+                                )}
                               </div>
                             )}
                           </div>

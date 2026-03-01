@@ -71,6 +71,19 @@ header p {
   gap: 0.75rem;
 }
 
+.admin-badge {
+  display: inline-block;
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: #fca5a5;
+  background: rgba(239, 68, 68, 0.2);
+  border: 1px solid rgba(239, 68, 68, 0.5);
+  padding: 0.2rem 0.5rem;
+  border-radius: 4px;
+  margin-left: 0.25rem;
+}
+
 .user-avatar {
   width: 36px;
   height: 36px;
@@ -101,6 +114,43 @@ header p {
   background: var(--bg-tertiary);
   color: var(--text-primary);
   border-color: var(--text-secondary);
+}
+
+/* Admin panel */
+.admin-panel {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.admin-bulk-analyze-button {
+  padding: 0.5rem 1rem;
+  font-family: 'DM Sans', sans-serif;
+  font-size: 0.85rem;
+  font-weight: 500;
+  background: transparent;
+  color: var(--accent);
+  border: 1px solid var(--accent-dim);
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.admin-bulk-analyze-button:hover:not(:disabled) {
+  background: var(--accent-glow);
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.admin-bulk-analyze-button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.admin-bulk-progress {
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+  white-space: nowrap;
 }
 
 /* Auth Container */
@@ -591,6 +641,48 @@ header p {
   align-items: center;
   gap: 0.75rem;
   margin-bottom: 0.75rem;
+}
+
+.emotion-dropdown-trigger {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  width: 100%;
+  padding: 0;
+  margin: 0 0 0 0;
+  background: none;
+  border: none;
+  cursor: pointer;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  border-radius: 6px;
+  transition: background 0.15s;
+}
+
+.emotion-dropdown-trigger:hover {
+  background: rgba(124, 58, 237, 0.15);
+}
+
+.emotion-dropdown-trigger .emotion-confidence {
+  margin-left: auto;
+}
+
+.emotion-chevron {
+  font-size: 0.65rem;
+  color: var(--text-secondary);
+  transition: transform 0.2s;
+  margin-left: 0.25rem;
+}
+
+.emotion-chevron.open {
+  transform: rotate(-180deg);
+}
+
+.breakdown-loading {
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+  font-style: italic;
 }
 
 .emotion-emoji {
