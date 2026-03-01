@@ -28,7 +28,8 @@ engine = create_engine(
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
-# Enable pgvector extension with retry logic
+# Called from app lifespan (main.py), not at import time, so the server can bind
+# before connecting to the database (avoids blocking/crashing before listen on 0.0.0.0).
 def enable_pgvector_extension():
     """Enable the pgvector extension in the database with retry logic."""
     max_retries = 5
@@ -48,10 +49,6 @@ def enable_pgvector_extension():
             else:
                 print(f"Failed to enable pgvector extension after {max_retries} attempts: {e}")
                 raise
-
-# Enable extension on import
-enable_pgvector_extension()
-
 
 def get_db():
     db = SessionLocal()

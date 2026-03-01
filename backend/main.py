@@ -14,6 +14,7 @@ from jose import JWTError, jwt
 from env import load_root_env
 
 from database import engine, get_db, Base
+from database import enable_pgvector_extension
 from models import JournalEntry, User, ClusteringRun, Cluster, EntryClusterAssignment
 from schemas import (
     JournalEntryCreate, JournalEntryUpdate, JournalEntryResponse,
@@ -82,7 +83,13 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             print(f"Warning: Failed to create database tables: {e}")
             break
-    
+
+    # Enable pgvector (Supabase often has it already; non-fatal if this fails)
+    try:
+        enable_pgvector_extension()
+    except Exception as e:
+        print(f"Warning: Could not ensure pgvector extension (may already exist): {e}")
+
     # Wake the Celery worker immediately on startup so it's ready for tasks
     ensure_worker_running()
 
