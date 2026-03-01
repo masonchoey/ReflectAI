@@ -1078,9 +1078,7 @@ function App() {
                                     </div>
                                   </>
                                 ) : (
-                                  <span className="breakdown-loading">
-                                    {analyzingId === entry.id ? 'Loading…' : 'Run analysis to see top emotions'}
-                                  </span>
+                                  <span className="breakdown-loading">Loading…</span>
                                 )}
                               </div>
                             )}
