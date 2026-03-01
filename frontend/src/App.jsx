@@ -1,12 +1,13 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 
-// Prefer Vite env; fall back based on environment
-// In production (Fly), use the Fly API URL; in development, use localhost
-const API_URL = import.meta.env.VITE_API_URL || (
-  window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
-    ? 'http://localhost:8000'
-    : 'https://reflectai-api-icy-dust-4243.fly.dev'
-)
+// When the app is opened from localhost, always use the local backend (Docker or uvicorn).
+// Otherwise use VITE_API_URL or the production Fly URL.
+const isLocalHost =
+  typeof window !== 'undefined' &&
+  (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1')
+const API_URL = isLocalHost
+  ? 'http://localhost:8000'
+  : (import.meta.env.VITE_API_URL || 'https://reflectai-api-icy-dust-4243.fly.dev')
 const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID || ''
 
 const CLUSTER_PARAMS_STORAGE_KEY = 'reflectai_cluster_params'
@@ -306,6 +307,14 @@ function App() {
       }
       const data = await response.json()
       setEntries(data)
+      // Pre-populate the breakdown state so the dropdown is instant (no ML re-run needed)
+      const preloaded = {}
+      data.forEach(entry => {
+        if (entry.all_emotions && entry.all_emotions.length > 0) {
+          preloaded[Number(entry.id)] = entry.all_emotions
+        }
+      })
+      setEmotionResults(prev => ({ ...prev, ...preloaded }))
       setError(null)
     } catch (err) {
       setError('Could not load entries. Please try again.')
@@ -652,15 +661,17 @@ function App() {
 
           if (status.status === 'SUCCESS' && status.result) {
             const result = status.result
+            // Use result.entry_id from backend as source of truth so we update the correct entry
+            const id = Number(result.entry_id ?? entryId)
             setEntries(prevEntries => prevEntries.map(entry =>
-              entry.id === entryId
+              Number(entry.id) === id
                 ? { ...entry, emotion: result.emotion, emotion_score: result.emotion_score }
                 : entry
             ))
-            setEmotionResults(prev => ({ ...prev, [entryId]: result.all_emotions }))
-            setExpandedEmotionEntries(prev => ({ ...prev, [entryId]: true }))
+            setEmotionResults(prev => ({ ...prev, [id]: result.all_emotions }))
+            setExpandedEmotionEntries(prev => ({ ...prev, [id]: true }))
             setError(null)
-            setAnalyzingId(null)
+            setAnalyzingId(prev => (prev === entryId || prev === id ? null : prev))
           } else if (status.status === 'FAILURE' || status.status === 'REVOKED') {
             throw new Error(status.error || 'Emotion analysis task failed')
           } else {
@@ -731,12 +742,13 @@ function App() {
 
             if (status.status === 'SUCCESS' && status.result) {
               const result = status.result
+              const id = Number(result.entry_id ?? entryId)
               setEntries(prev => prev.map(e =>
-                e.id === entryId
+                Number(e.id) === id
                   ? { ...e, emotion: result.emotion, emotion_score: result.emotion_score }
                   : e
               ))
-              setEmotionResults(prev => ({ ...prev, [entryId]: result.all_emotions }))
+              setEmotionResults(prev => ({ ...prev, [id]: result.all_emotions }))
               completed++
               setBulkAnalyzeProgress(p => ({ ...p, completed }))
               resolve()
@@ -972,18 +984,25 @@ function App() {
                       </div>
                       {editingId !== entry.id && (
                         <div className="entry-actions">
-                          <button 
-                            className="analyze-button"
-                            onClick={() => toggleEmotionBreakdown(entry.id)}
-                            disabled={analyzingId === entry.id || !emotionResults[entry.id]}
-                            aria-label="Toggle emotion breakdown"
-                          >
-                            {analyzingId === entry.id
-                              ? '🔄 Analyzing...'
-                              : emotionResults[entry.id]
-                                ? (expandedEmotionEntries[entry.id] ? '🙈 Hide Breakdown' : '🔍 View Breakdown')
-                                : '🔮 Preparing analysis...'}
-                          </button>
+                          {!entry.emotion && (
+                            <button 
+                              className="analyze-button"
+                              onClick={() => handleAnalyzeEmotion(entry.id)}
+                              disabled={analyzingId === entry.id}
+                              aria-label="Analyze emotion"
+                            >
+                              {analyzingId === entry.id ? '🔄 Analyzing emotion...' : '🔮 Analyze emotion'}
+                            </button>
+                          )}
+                          {entry.emotion && (
+                            <button 
+                              className="analyze-button"
+                              onClick={() => toggleEmotionBreakdown(entry.id)}
+                              aria-label="Toggle emotion breakdown"
+                            >
+                              {expandedEmotionEntries[entry.id] ? '🙈 Hide Breakdown' : '🔍 View Breakdown'}
+                            </button>
+                          )}
                           <button 
                             className="edit-button"
                             onClick={() => handleEdit(entry)}
@@ -1038,13 +1057,7 @@ function App() {
                             <button
                               type="button"
                               className="emotion-dropdown-trigger"
-                              onClick={() => {
-                                const next = !expandedEmotionEntries[entry.id]
-                                toggleEmotionBreakdown(entry.id)
-                                if (next && !emotionResults[entry.id] && analyzingId !== entry.id) {
-                                  handleAnalyzeEmotion(entry.id)
-                                }
-                              }}
+                              onClick={() => toggleEmotionBreakdown(entry.id)}
                               aria-expanded={!!expandedEmotionEntries[entry.id]}
                               aria-label="Toggle emotion breakdown"
                             >

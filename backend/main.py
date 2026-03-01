@@ -70,6 +70,12 @@ async def lifespan(app: FastAPI):
     for attempt in range(max_retries):
         try:
             Base.metadata.create_all(bind=engine)
+            # Add any new columns that create_all won't add to existing tables
+            with engine.begin() as conn:
+                conn.execute(text(
+                    "ALTER TABLE journal_entries "
+                    "ADD COLUMN IF NOT EXISTS all_emotions JSONB"
+                ))
             print("Database tables initialized successfully")
             break
         except OperationalError as e:
@@ -226,6 +232,7 @@ def entry_to_response(entry: JournalEntry) -> JournalEntryResponse:
         edited_at=entry.edited_at,
         emotion=entry.emotion,
         emotion_score=entry.emotion_score,
+        all_emotions=entry.all_emotions,
         has_embedding=entry.embedding is not None
     )
 
@@ -458,7 +465,7 @@ def bulk_analyze_emotions(
 
     entries = db.query(JournalEntry).filter(
         JournalEntry.user_id == target_user.id,
-        (JournalEntry.emotion == None) | (JournalEntry.emotion_score == None)
+        (JournalEntry.emotion == None) | (JournalEntry.emotion_score == None) | (JournalEntry.all_emotions == None)
     ).all()
 
     task_ids = []

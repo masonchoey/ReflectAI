@@ -46,6 +46,7 @@ class JournalEntryResponse(BaseModel):
     edited_at: Optional[datetime] = None
     emotion: Optional[str] = None
     emotion_score: Optional[float] = None
+    all_emotions: Optional[List["EmotionResult"]] = None
     has_embedding: bool = False
 
     class Config:

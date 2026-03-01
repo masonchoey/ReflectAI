@@ -32,6 +32,7 @@ class JournalEntry(Base):
     edited_at = Column(DateTime(timezone=True), nullable=True)
     emotion = Column(String(50), nullable=True)
     emotion_score = Column(Float, nullable=True)
+    all_emotions = Column(JSON, nullable=True)  # Full ranked emotion breakdown [{label, score}, ...]
     embedding = Column(Vector(384), nullable=True)  # Granite-embedding-30m-english dense embedding vector (384 dimensions)
     summary=Column(Text, nullable=True)
 
