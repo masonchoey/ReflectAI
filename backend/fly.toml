@@ -34,9 +34,3 @@ primary_region = 'lax'
     grace_period = '90s'
     method = 'GET'
     path = '/'
-
-[[vm]]
-  memory = '1gb'
-  cpu_kind = 'shared'
-  cpus = 1
-  memory_mb = 1024
