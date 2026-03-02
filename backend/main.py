@@ -27,7 +27,7 @@ from schemas import (
     TaskStatusResponse, ClusteringRecommendResponse, RecommendedClusterParams,
     BulkAnalyzeResponse, BulkAnalyzeRequest
 )
-from hdbscan_clustering import analyze_entry_lengths
+from sqlalchemy import text
 from tasks import (
     vectorize_entry,
     vectorize_all_entries,
@@ -703,6 +703,7 @@ def recommend_clustering_params(
             embedding_coverage=0.0,
         )
 
+    from hdbscan_clustering import analyze_entry_lengths
     length_stats = analyze_entry_lengths(entries)
     avg_words = float(length_stats["word_count"]["mean"])
     std_words = float(length_stats["word_count"]["std"])
