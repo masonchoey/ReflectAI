@@ -24,10 +24,17 @@ MODELS = [
 
 
 def is_cached(model_id: str, cache_dir: str) -> bool:
-    """Return True if at least one snapshot of model_id exists in cache_dir."""
+    """Return True if at least one snapshot of model_id exists in cache_dir.
+
+    Checks both the legacy root layout and the newer HuggingFace Hub layout
+    where models live under a 'hub/' sub-directory of HF_HOME.
+    """
     model_key = "models--" + model_id.replace("/", "--")
-    snapshots = pathlib.Path(cache_dir) / model_key / "snapshots"
-    return snapshots.exists() and any(snapshots.iterdir())
+    candidates = [
+        pathlib.Path(cache_dir) / model_key / "snapshots",
+        pathlib.Path(cache_dir) / "hub" / model_key / "snapshots",
+    ]
+    return any(p.exists() and any(p.iterdir()) for p in candidates)
 
 
 print(f"Model volume: {HF_HOME}")

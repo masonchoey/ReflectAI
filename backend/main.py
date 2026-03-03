@@ -89,22 +89,25 @@ async def lifespan(app: FastAPI):
 
     loop = asyncio.get_event_loop()
 
-    # Run blocking DB init in a thread so it never stalls the asyncio event loop.
-    # A 30-second timeout ensures a dead DB connection can't block startup forever.
-    try:
-        await asyncio.wait_for(loop.run_in_executor(None, _init_db_sync), timeout=30.0)
-    except asyncio.TimeoutError:
-        print("Warning: Database initialization timed out after 30s, starting anyway")
-    except Exception as e:
-        print(f"Warning: Database initialization failed: {e}")
+    async def _init_db_background():
+        """Run DB table creation and pgvector setup in the background so the
+        server can bind and serve requests (e.g. the frontend) immediately."""
+        try:
+            await asyncio.wait_for(loop.run_in_executor(None, _init_db_sync), timeout=30.0)
+        except asyncio.TimeoutError:
+            print("Warning: Database initialization timed out after 30s")
+        except Exception as e:
+            print(f"Warning: Database initialization failed: {e}")
 
-    # Enable pgvector (non-fatal, run in executor so it also can't block)
-    try:
-        await asyncio.wait_for(
-            loop.run_in_executor(None, enable_pgvector_extension), timeout=15.0
-        )
-    except Exception as e:
-        print(f"Warning: Could not ensure pgvector extension: {e}")
+        try:
+            await asyncio.wait_for(
+                loop.run_in_executor(None, enable_pgvector_extension), timeout=15.0
+            )
+        except Exception as e:
+            print(f"Warning: Could not ensure pgvector extension: {e}")
+
+    # Fire DB init as a background task — server binds immediately without waiting.
+    asyncio.create_task(_init_db_background())
 
     # Wake the Celery worker (already runs in a background thread internally)
     ensure_worker_running()
