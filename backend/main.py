@@ -4,7 +4,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Depends, HTTPException, status, Response, Body
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, load_only
 from typing import List, Optional
 from datetime import datetime, timezone, timedelta
 import numpy as np
@@ -27,7 +27,7 @@ from schemas import (
     TaskStatusResponse, ClusteringRecommendResponse, RecommendedClusterParams,
     BulkAnalyzeResponse, BulkAnalyzeRequest
 )
-from sqlalchemy import text
+from sqlalchemy import text, func
 from tasks import (
     vectorize_entry,
     vectorize_all_entries,
@@ -367,10 +367,35 @@ def get_entries(
     db: Session = Depends(get_db)
 ):
     """Get all journal entries for the authenticated user."""
-    entries = db.query(JournalEntry).filter(
+    rows = db.query(
+        JournalEntry.id,
+        JournalEntry.user_id,
+        JournalEntry.title,
+        JournalEntry.content,
+        JournalEntry.created_at,
+        JournalEntry.edited_at,
+        JournalEntry.emotion,
+        JournalEntry.emotion_score,
+        JournalEntry.all_emotions,
+        (JournalEntry.embedding.isnot(None)).label('has_embedding'),
+    ).filter(
         JournalEntry.user_id == current_user.id
     ).order_by(JournalEntry.created_at.desc()).all()
-    return [entry_to_response(e) for e in entries]
+    return [
+        JournalEntryResponse(
+            id=r.id,
+            user_id=r.user_id,
+            title=r.title,
+            content=r.content,
+            created_at=r.created_at,
+            edited_at=r.edited_at,
+            emotion=r.emotion,
+            emotion_score=r.emotion_score,
+            all_emotions=r.all_emotions,
+            has_embedding=r.has_embedding,
+        )
+        for r in rows
+    ]
 
 
 @app.get("/entries/{entry_id}", response_model=JournalEntryResponse)
@@ -380,13 +405,35 @@ def get_entry(
     db: Session = Depends(get_db)
 ):
     """Get a specific journal entry (must belong to authenticated user)."""
-    entry = db.query(JournalEntry).filter(
+    row = db.query(
+        JournalEntry.id,
+        JournalEntry.user_id,
+        JournalEntry.title,
+        JournalEntry.content,
+        JournalEntry.created_at,
+        JournalEntry.edited_at,
+        JournalEntry.emotion,
+        JournalEntry.emotion_score,
+        JournalEntry.all_emotions,
+        (JournalEntry.embedding.isnot(None)).label('has_embedding'),
+    ).filter(
         JournalEntry.id == entry_id,
         JournalEntry.user_id == current_user.id
     ).first()
-    if entry is None:
+    if row is None:
         raise HTTPException(status_code=404, detail="Entry not found")
-    return entry_to_response(entry)
+    return JournalEntryResponse(
+        id=row.id,
+        user_id=row.user_id,
+        title=row.title,
+        content=row.content,
+        created_at=row.created_at,
+        edited_at=row.edited_at,
+        emotion=row.emotion,
+        emotion_score=row.emotion_score,
+        all_emotions=row.all_emotions,
+        has_embedding=row.has_embedding,
+    )
 
 
 @app.put("/entries/{entry_id}", response_model=JournalEntryResponse)
@@ -433,11 +480,11 @@ def analyze_emotion(
     Returns a task_id that can be polled at GET /tasks/{task_id}.
     On SUCCESS the result contains: entry_id, emotion, emotion_score, all_emotions.
     """
-    entry = db.query(JournalEntry).filter(
+    exists = db.query(JournalEntry.id).filter(
         JournalEntry.id == entry_id,
         JournalEntry.user_id == current_user.id
     ).first()
-    if entry is None:
+    if exists is None:
         raise HTTPException(status_code=404, detail="Entry not found")
 
     task = analyze_emotion_task.delay(entry_id)
@@ -476,22 +523,21 @@ def bulk_analyze_emotions(
     else:
         target_user = current_user
 
-    entries = db.query(JournalEntry).filter(
+    rows = db.query(JournalEntry.id).filter(
         JournalEntry.user_id == target_user.id,
         (JournalEntry.emotion == None) | (JournalEntry.emotion_score == None) | (JournalEntry.all_emotions == None)
     ).all()
 
     task_ids = []
-    entry_ids = []
-    for entry in entries:
-        task = analyze_emotion_task.delay(entry.id)
+    entry_ids = [r.id for r in rows]
+    for eid in entry_ids:
+        task = analyze_emotion_task.delay(eid)
         task_ids.append(task.id)
-        entry_ids.append(entry.id)
 
     ensure_worker_running()
 
     return BulkAnalyzeResponse(
-        queued=len(entries),
+        queued=len(entry_ids),
         task_ids=task_ids,
         entry_ids=entry_ids
     )
@@ -505,11 +551,11 @@ def tokenize_entry(
 ):
     """Queue tokenization for a journal entry (must belong to authenticated user).
     Poll GET /tasks/{task_id} for result; on SUCCESS, result has entry_id, text, token_count, tokens, token_ids."""
-    entry = db.query(JournalEntry).filter(
+    exists = db.query(JournalEntry.id).filter(
         JournalEntry.id == entry_id,
         JournalEntry.user_id == current_user.id
     ).first()
-    if entry is None:
+    if exists is None:
         raise HTTPException(status_code=404, detail="Entry not found")
 
     task = tokenize_entry_task.delay(entry_id)
@@ -524,13 +570,13 @@ def embed_entry(
     db: Session = Depends(get_db)
 ):
     """Queue embedding generation for a journal entry (must belong to authenticated user)."""
-    entry = db.query(JournalEntry).filter(
+    exists = db.query(JournalEntry.id).filter(
         JournalEntry.id == entry_id,
         JournalEntry.user_id == current_user.id
     ).first()
-    if entry is None:
+    if exists is None:
         raise HTTPException(status_code=404, detail="Entry not found")
-    
+
     # Queue vectorization task
     task = vectorize_entry.delay(entry_id)
     ensure_worker_running()
@@ -567,18 +613,27 @@ def find_similar_entries(
     db: Session = Depends(get_db)
 ):
     """Find similar journal entries (only searches user's own entries)."""
-    entry = db.query(JournalEntry).filter(
+    entry = db.query(JournalEntry).options(load_only(
+        JournalEntry.id,
+        JournalEntry.embedding,
+    )).filter(
         JournalEntry.id == entry_id,
         JournalEntry.user_id == current_user.id
     ).first()
     if entry is None:
         raise HTTPException(status_code=404, detail="Entry not found")
-    
+
     if entry.embedding is None:
         raise HTTPException(status_code=400, detail="Entry has no embedding. Call /entries/{entry_id}/embed first.")
-    
+
     # Get all other entries with embeddings for this user
-    other_entries = db.query(JournalEntry).filter(
+    other_entries = db.query(JournalEntry).options(load_only(
+        JournalEntry.id,
+        JournalEntry.content,
+        JournalEntry.created_at,
+        JournalEntry.emotion,
+        JournalEntry.embedding,
+    )).filter(
         JournalEntry.id != entry_id,
         JournalEntry.user_id == current_user.id,
         JournalEntry.embedding != None
@@ -694,7 +749,11 @@ def recommend_clustering_params(
     db: Session = Depends(get_db)
 ):
     """Analyze the user's journal entries and return heuristically recommended clustering parameters."""
-    entries = db.query(JournalEntry).filter(
+    entries = db.query(JournalEntry).options(load_only(
+        JournalEntry.id,
+        JournalEntry.content,
+        JournalEntry.emotion,
+    )).filter(
         JournalEntry.user_id == current_user.id,
         JournalEntry.content.isnot(None)
     ).all()
@@ -724,7 +783,10 @@ def recommend_clustering_params(
 
     emotions = [e.emotion for e in entries if e.emotion]
     distinct_emotions = len(set(emotions))
-    n_embedded = sum(1 for e in entries if e.embedding is not None)
+    n_embedded = db.query(func.count(JournalEntry.id)).filter(
+        JournalEntry.user_id == current_user.id,
+        JournalEntry.embedding.isnot(None)
+    ).scalar()
     embedding_coverage = n_embedded / n if n > 0 else 0.0
 
     # --- Heuristic formulas ---
@@ -821,8 +883,6 @@ def get_cluster_visualization(
     db: Session = Depends(get_db)
 ):
     """Get cluster visualization data for a specific run."""
-    from sqlalchemy.orm import load_only
-
     run = db.query(ClusteringRun).filter(
         ClusteringRun.id == run_id,
         ClusteringRun.user_id == current_user.id
@@ -893,7 +953,12 @@ def get_cluster_visualization(
     else:
         # --- Migration guardrail: coordinates missing (pre-feature run or first time) ---
         # Compute UMAP on the fly over ALL user entries, save results, then continue.
-        all_entries = db.query(JournalEntry).filter(
+        all_entries = db.query(JournalEntry).options(load_only(
+            JournalEntry.id,
+            JournalEntry.title,
+            JournalEntry.created_at,
+            JournalEntry.embedding,
+        )).filter(
             JournalEntry.user_id == current_user.id,
             JournalEntry.embedding != None  # noqa: E711
         ).order_by(JournalEntry.created_at.asc()).all()
@@ -1019,14 +1084,14 @@ def get_entry_cluster_memberships(
     If run_id is not provided, uses the latest clustering run.
     """
     # Verify the entry belongs to the user
-    entry = db.query(JournalEntry).filter(
+    exists = db.query(JournalEntry.id).filter(
         JournalEntry.id == entry_id,
         JournalEntry.user_id == current_user.id
     ).first()
-    
-    if entry is None:
+
+    if exists is None:
         raise HTTPException(status_code=404, detail="Entry not found")
-    
+
     # Get the clustering run
     if run_id is None:
         # Get latest run for this user
@@ -1147,7 +1212,12 @@ def get_cluster_entries(
     
     # Get the actual entry data
     entry_ids = [a.entry_id for a in assignments]
-    entries = db.query(JournalEntry).filter(
+    entries = db.query(JournalEntry).options(load_only(
+        JournalEntry.id,
+        JournalEntry.title,
+        JournalEntry.content,
+        JournalEntry.created_at,
+    )).filter(
         JournalEntry.id.in_(entry_ids),
         JournalEntry.user_id == current_user.id
     ).all()
