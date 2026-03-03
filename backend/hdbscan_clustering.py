@@ -895,6 +895,79 @@ def analyze_entry_lengths(entries: List[JournalEntry]) -> Dict:
     }
 
 
+def _compute_and_save_umap_2d(user_id: int) -> None:
+    """
+    Compute 2D UMAP visualization coordinates for ALL of a user's embedded entries
+    and persist them to journal_entries.umap_x / umap_y.
+
+    Uses fixed parameters (n_neighbors=15, min_dist=0.1, euclidean) to keep
+    coordinates consistent with what the visualization API endpoint expects.
+    Runs on every entry with an embedding (not just date-filtered ones) so the
+    scatter-plot layout is stable across different clustering runs.
+
+    Opens and closes its own short-lived session so the caller is not required to
+    hold a connection open during the (potentially long) UMAP computation.
+    """
+    if not UMAP_AVAILABLE:
+        print("WARNING: umap-learn not available – skipping 2D coord persistence.")
+        return
+
+    # --- Phase 1: load embeddings, then immediately close the DB session ---
+    db = SessionLocal()
+    try:
+        all_entries = db.query(JournalEntry).filter(
+            JournalEntry.user_id == user_id,
+            JournalEntry.embedding != None  # noqa: E711
+        ).order_by(JournalEntry.created_at.asc()).all()
+
+        if not all_entries:
+            return
+
+        print(f"\n--- Computing 2D UMAP coordinates for {len(all_entries)} entries ---")
+
+        entry_ids: list[int] = []
+        embedding_list = []
+        for e in all_entries:
+            emb = e.embedding
+            if hasattr(emb, 'tolist'):
+                embedding_list.append(np.array(emb, dtype=np.float32))
+            elif isinstance(emb, list):
+                embedding_list.append(np.array(emb, dtype=np.float32))
+            else:
+                embedding_list.append(np.array(list(emb), dtype=np.float32))
+            entry_ids.append(e.id)
+    finally:
+        db.close()
+
+    # --- Phase 2: run UMAP with no DB connection held ---
+    all_embeddings = np.array(embedding_list)
+    reducer = umap.UMAP(
+        n_components=2,
+        n_neighbors=15,
+        min_dist=0.1,
+        metric='euclidean',
+        random_state=42
+    )
+    embedding_2d = reducer.fit_transform(all_embeddings)
+
+    # --- Phase 3: save results in a fresh, short-lived session ---
+    db = SessionLocal()
+    try:
+        from sqlalchemy import update as sa_update
+        update_rows = [
+            {"id": entry_ids[i], "umap_x": float(embedding_2d[i, 0]), "umap_y": float(embedding_2d[i, 1])}
+            for i in range(len(entry_ids))
+        ]
+        db.execute(sa_update(JournalEntry), update_rows)
+        db.commit()
+        print(f"Saved 2D UMAP coordinates for {len(entry_ids)} entries.")
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
+
+
 def run_clustering(
     user_id: int = 1,
     min_cluster_size: Optional[int] = None,
@@ -1015,7 +1088,16 @@ def run_clustering(
         if len(embeddings) == 0:
             print("No embeddings found. Run generate_embeddings.py first.")
             return
-        
+
+        # Detach all ORM objects from the session so their already-loaded attribute
+        # values remain accessible in Python memory, then close the connection
+        # immediately.  Holding the session open across the multi-minute ML pipeline
+        # (HDBSCAN → topic labelling → UMAP) leaves the PostgreSQL connection sitting
+        # "idle in transaction" for the entire duration, which exhausts the pool and
+        # blocks admin queries.
+        db.expunge_all()
+        db.close()
+
         print(f"Embeddings shape: {embeddings.shape}")
         
         # Analyze entry lengths
@@ -1219,8 +1301,14 @@ def run_clustering(
         ]
         meta_db.batch_save_assignments(assignment_tuples)
         print(f"Saved {len(assignments)} cluster assignments")
-        
+
         meta_db.close()
+
+        # Persist 2D UMAP visualization coordinates so the API can skip recomputing them
+        try:
+            _compute_and_save_umap_2d(user_id)
+        except Exception as umap_err:
+            print(f"WARNING: Failed to save 2D UMAP coordinates (non-fatal): {umap_err}")
         
         # Show sample entries from each cluster
         print("\n--- Sample Entries per Cluster ---")

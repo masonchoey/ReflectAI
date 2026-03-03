@@ -22,7 +22,13 @@ engine = create_engine(
     max_overflow=20,  # Maximum number of connections beyond pool_size
     connect_args={
         "connect_timeout": 10,       # Initial TCP connection timeout (seconds)
-        "options": "-c statement_timeout=30000",  # 30 second per-statement timeout
+        # statement_timeout:              kills a query that runs longer than 30 s
+        # idle_in_transaction_session_timeout: kills a connection that sits "idle in
+        #   transaction" (open txn, no active query) for longer than 60 s.  This is
+        #   the DB-side safety net for the scenario where Python code holds a session
+        #   open between queries (e.g. during CPU-bound work) and never commits or
+        #   rolls back, causing connections to pile up in pg_stat_activity.
+        "options": "-c statement_timeout=30000 -c idle_in_transaction_session_timeout=60000",
         # TCP keepalives detect dead connections in ~80s (30s idle + 10s * 5 probes)
         # without this, a dropped connection can hang for hours
         "keepalives": 1,
@@ -60,5 +66,8 @@ def get_db():
     db = SessionLocal()
     try:
         yield db
+    except Exception:
+        db.rollback()
+        raise
     finally:
         db.close()

@@ -34,6 +34,8 @@ class JournalEntry(Base):
     emotion_score = Column(Float, nullable=True)
     all_emotions = Column(JSON, nullable=True)  # Full ranked emotion breakdown [{label, score}, ...]
     embedding = Column(Vector(384), nullable=True)  # Granite-embedding-30m-english dense embedding vector (384 dimensions)
+    umap_x = Column(Float, nullable=True)  # 2D UMAP x-coordinate for visualization (computed during clustering)
+    umap_y = Column(Float, nullable=True)  # 2D UMAP y-coordinate for visualization (computed during clustering)
     summary=Column(Text, nullable=True)
 
     # Relationship to user

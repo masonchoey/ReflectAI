@@ -77,6 +77,10 @@ class DatabaseTask(Task):
     def after_return(self, *args, **kwargs):
         """Close database session after task completion."""
         if self._db is not None:
+            try:
+                self._db.rollback()
+            except Exception:
+                pass
             self._db.close()
             self._db = None
 

@@ -821,140 +821,174 @@ def get_cluster_visualization(
     db: Session = Depends(get_db)
 ):
     """Get cluster visualization data for a specific run."""
-    # Verify the run belongs to the user
+    from sqlalchemy.orm import load_only
+
     run = db.query(ClusteringRun).filter(
         ClusteringRun.id == run_id,
         ClusteringRun.user_id == current_user.id
     ).first()
-    
+
     if run is None:
         raise HTTPException(status_code=404, detail="Clustering run not found")
-    
-    # Get all entries with embeddings for this user, sorted by created_at
-    entries = db.query(JournalEntry).filter(
-        JournalEntry.user_id == current_user.id,
-        JournalEntry.embedding != None
-    ).order_by(JournalEntry.created_at.asc()).all()
-    
-    if not entries:
-        raise HTTPException(status_code=400, detail="No entries with embeddings found")
-    
+
     # Get cluster assignments for this run
     assignments = db.query(EntryClusterAssignment).filter(
         EntryClusterAssignment.run_id == run_id
     ).all()
-    
-    # Create mappings: entry_id -> primary cluster assignment AND all memberships
-    entry_to_cluster = {}  # Primary cluster only
-    entry_to_all_memberships = {}  # All cluster memberships
-    
+
+    # Build entry_id -> primary assignment and all-memberships maps
+    entry_to_cluster: dict = {}
+    entry_to_all_memberships: dict = {}
+
     for assignment in assignments:
-        # Track all memberships
-        if assignment.entry_id not in entry_to_all_memberships:
-            entry_to_all_memberships[assignment.entry_id] = []
-        entry_to_all_memberships[assignment.entry_id].append(assignment)
-        
-        # Track primary cluster
+        entry_to_all_memberships.setdefault(assignment.entry_id, []).append(assignment)
         if assignment.is_primary or assignment.entry_id not in entry_to_cluster:
             entry_to_cluster[assignment.entry_id] = {
                 'cluster_id': assignment.cluster_id,
                 'probability': assignment.membership_probability
             }
-    
-    # Get cluster info
-    clusters = db.query(Cluster).filter(
-        Cluster.run_id == run_id
-    ).all()
-    
+
+    assigned_entry_ids = set(entry_to_cluster.keys())
+    if not assigned_entry_ids:
+        raise HTTPException(status_code=400, detail="No entries found for this clustering run")
+
+    # Get cluster metadata
+    clusters = db.query(Cluster).filter(Cluster.run_id == run_id).all()
     cluster_info_map = {}
     for cluster in clusters:
-        cluster_name = cluster.topic_label or f"Cluster {cluster.cluster_id}"
         cluster_info_map[cluster.cluster_id] = {
-            'name': cluster_name,
+            'name': cluster.topic_label or f"Cluster {cluster.cluster_id}",
             'size': cluster.size,
             'persistence': cluster.persistence,
             'topic_label': cluster.topic_label,
             'summary': cluster.summary
         }
-    
-    # Filter entries that have assignments in this run
-    entries_with_assignments = [e for e in entries if e.id in entry_to_cluster]
-    
-    if not entries_with_assignments:
-        raise HTTPException(status_code=400, detail="No entries found for this clustering run")
-    
-    # Extract embeddings
-    embedding_list = []
-    for e in entries_with_assignments:
-        emb = e.embedding
-        # Convert to numpy array if needed
-        if hasattr(emb, 'tolist'):
-            embedding_list.append(emb)
-        elif isinstance(emb, list):
-            embedding_list.append(np.array(emb, dtype=np.float32))
-        else:
-            embedding_list.append(np.array(list(emb), dtype=np.float32))
-    embeddings = np.array(embedding_list)
-    
-    # Use UMAP to reduce to 2D for visualization
-    try:
-        import umap
-        reducer = umap.UMAP(
-            n_components=2,
-            n_neighbors=15,
-            min_dist=0.1,
-            metric='euclidean',
-            random_state=42
+
+    # --- Fast path: use pre-computed 2D coordinates stored on journal_entries ---
+    # Load only the lightweight columns; skip the 384-dim embedding vector entirely.
+    slim_entries = (
+        db.query(JournalEntry)
+        .options(load_only(
+            JournalEntry.id,
+            JournalEntry.title,
+            JournalEntry.created_at,
+            JournalEntry.umap_x,
+            JournalEntry.umap_y,
+        ))
+        .filter(
+            JournalEntry.user_id == current_user.id,
+            JournalEntry.id.in_(assigned_entry_ids),
         )
-        embedding_2d = reducer.fit_transform(embeddings)
-    except ImportError:
-        raise HTTPException(
-            status_code=503,
-            detail="UMAP not available. Install with: pip install umap-learn"
-        )
-    
-    # Build points list
+        .order_by(JournalEntry.created_at.asc())
+        .all()
+    )
+
+    has_coords = bool(slim_entries) and all(
+        e.umap_x is not None and e.umap_y is not None for e in slim_entries
+    )
+
+    if has_coords:
+        entries_with_assignments = slim_entries
+        umap_coords = {e.id: (e.umap_x, e.umap_y) for e in slim_entries}
+    else:
+        # --- Migration guardrail: coordinates missing (pre-feature run or first time) ---
+        # Compute UMAP on the fly over ALL user entries, save results, then continue.
+        all_entries = db.query(JournalEntry).filter(
+            JournalEntry.user_id == current_user.id,
+            JournalEntry.embedding != None  # noqa: E711
+        ).order_by(JournalEntry.created_at.asc()).all()
+
+        if not all_entries:
+            raise HTTPException(status_code=400, detail="No entries with embeddings found")
+
+        entry_ids_for_umap = [e.id for e in all_entries]
+        embedding_list = []
+        for e in all_entries:
+            emb = e.embedding
+            if hasattr(emb, 'tolist'):
+                embedding_list.append(np.array(emb, dtype=np.float32))
+            elif isinstance(emb, list):
+                embedding_list.append(np.array(emb, dtype=np.float32))
+            else:
+                embedding_list.append(np.array(list(emb), dtype=np.float32))
+        embeddings = np.array(embedding_list)
+
+        # Release the DB transaction before the UMAP computation so the connection
+        # does not sit "idle in transaction" for the duration of the CPU-bound work.
+        # expunge_all() keeps loaded attribute values accessible on the now-detached
+        # objects (title, id, etc.) without requiring any further DB round-trips.
+        db.expunge_all()
+        db.rollback()
+
+        try:
+            import umap as umap_lib
+            reducer = umap_lib.UMAP(
+                n_components=2,
+                n_neighbors=15,
+                min_dist=0.1,
+                metric='euclidean',
+                random_state=42
+            )
+            embedding_2d = reducer.fit_transform(embeddings)
+        except ImportError:
+            raise HTTPException(
+                status_code=503,
+                detail="UMAP not available. Install with: pip install umap-learn"
+            )
+
+        from sqlalchemy import update as _sa_update
+        umap_coords = {}
+        update_rows = []
+        for i, entry in enumerate(all_entries):
+            x, y = float(embedding_2d[i, 0]), float(embedding_2d[i, 1])
+            umap_coords[entry.id] = (x, y)
+            update_rows.append({"id": entry_ids_for_umap[i], "umap_x": x, "umap_y": y})
+        db.execute(_sa_update(JournalEntry), update_rows)
+        db.commit()
+
+        entries_with_assignments = [e for e in all_entries if e.id in assigned_entry_ids]
+        if not entries_with_assignments:
+            raise HTTPException(status_code=400, detail="No entries found for this clustering run")
+
+    # Build response points
     points = []
-    for i, entry in enumerate(entries_with_assignments):
+    for entry in entries_with_assignments:
         assignment = entry_to_cluster[entry.id]
         cluster_id = assignment['cluster_id']
-        
-        # Handle noise points (cluster_id = -1)
-        if cluster_id == -1:
-            cluster_name = "Noise"
-        else:
-            cluster_name = cluster_info_map.get(cluster_id, {}).get('name', f"Cluster {cluster_id}")
-        
-        # Get all memberships for this entry
+        cluster_name = (
+            "Noise" if cluster_id == -1
+            else cluster_info_map.get(cluster_id, {}).get('name', f"Cluster {cluster_id}")
+        )
+
         all_memberships = []
         for membership in sorted(
-            entry_to_all_memberships.get(entry.id, []), 
-            key=lambda x: x.membership_probability, 
+            entry_to_all_memberships.get(entry.id, []),
+            key=lambda x: x.membership_probability,
             reverse=True
         ):
-            membership_cluster_name = (
-                "Noise" if membership.cluster_id == -1 
+            mem_cluster_name = (
+                "Noise" if membership.cluster_id == -1
                 else cluster_info_map.get(membership.cluster_id, {}).get('name', f"Cluster {membership.cluster_id}")
             )
             all_memberships.append(ClusterMembership(
                 cluster_id=membership.cluster_id,
-                cluster_name=membership_cluster_name,
+                cluster_name=mem_cluster_name,
                 membership_probability=membership.membership_probability,
                 is_primary=membership.is_primary
             ))
-        
+
+        x, y = umap_coords[entry.id]
         points.append(ClusterPoint(
             entry_id=entry.id,
             title=entry.title,
-            x=float(embedding_2d[i, 0]),
-            y=float(embedding_2d[i, 1]),
+            x=x,
+            y=y,
             cluster_id=cluster_id,
             cluster_name=cluster_name,
             membership_probability=assignment['probability'],
             all_memberships=all_memberships
         ))
-    
-    # Build clusters list
+
     clusters_list = [
         ClusterInfoResponse(
             cluster_id=cluster.cluster_id,
@@ -965,7 +999,7 @@ def get_cluster_visualization(
         )
         for cluster in clusters
     ]
-    
+
     return ClusterVisualizationResponse(
         run_id=run_id,
         points=points,
