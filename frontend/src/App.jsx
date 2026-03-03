@@ -813,6 +813,7 @@ function App() {
       get_journal_statistics: 'Checked statistics',
     }
     return labels[toolName] || toolName
+  }
   const handleBulkAnalyze = async () => {
     try {
       setBulkAnalyzing(true)
@@ -2513,5 +2514,5 @@ function ClusterVisualization({ data, hoveredPoint, onPointHover }) {
     </div>
   )
 }
-}
+
 export default App
