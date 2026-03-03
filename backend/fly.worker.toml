@@ -13,6 +13,11 @@ primary_region = 'lax'
   HF_DATASETS_CACHE = '/data/huggingface'
   HF_HOME = '/data/huggingface'
   TRANSFORMERS_CACHE = '/data/huggingface'
+  # start_worker.sh unsets these before running download_models.py, then
+  # re-exports them before handing off to the Celery process — so the worker
+  # itself never makes a HuggingFace network call.
+  HF_HUB_OFFLINE = '1'
+  TRANSFORMERS_OFFLINE = '1'
   auto_stop_machines = 'true'
 
 # Persistent volume for ML model weights:
@@ -23,7 +28,6 @@ primary_region = 'lax'
 [[mounts]]
   source = 'reflectai_worker_models'
   destination = '/data/huggingface'
-  initial_size = '3gb'
 
 [[vm]]
   memory = '2gb'

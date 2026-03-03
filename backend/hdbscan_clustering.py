@@ -47,12 +47,18 @@ try:
 except ImportError:
     UMAP_AVAILABLE = False
 
-# Optional transformers imports for topic labeling
+# Optional transformers imports (retained for any other use)
 try:
     from transformers import AutoModelForCausalLM, AutoTokenizer
     TRANSFORMERS_AVAILABLE = True
 except ImportError:
     TRANSFORMERS_AVAILABLE = False
+
+try:
+    from openai import OpenAI
+    OPENAI_AVAILABLE = True
+except ImportError:
+    OPENAI_AVAILABLE = False
 
 # Add parent dir to path for imports
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -78,6 +84,7 @@ class ClusterInfo:
     persistence: float
     centroid_entry_id: Optional[int]  # Entry closest to cluster centroid
     topic_label: Optional[str] = None  # AI-generated topic label
+    summary: Optional[str] = None  # AI-generated multi-sentence summary
 
 
 class ClusterMetadataDB:
@@ -136,7 +143,8 @@ class ClusterMetadataDB:
         size: int,
         persistence: Optional[float],
         centroid_entry_id: Optional[int],
-        topic_label: Optional[str] = None
+        topic_label: Optional[str] = None,
+        summary: Optional[str] = None
     ):
         """Save cluster metadata."""
         cluster = Cluster(
@@ -145,7 +153,8 @@ class ClusterMetadataDB:
             size=size,
             persistence=persistence,
             centroid_entry_id=centroid_entry_id,
-            topic_label=topic_label
+            topic_label=topic_label,
+            summary=summary
         )
         self.session.add(cluster)
         self.session.commit()
@@ -249,135 +258,207 @@ class ClusterMetadataDB:
 
 
 class TopicLabeler:
-    """Generate topic labels for clusters using SmolLM2."""
-    
-    def __init__(self, model_name: str = "HuggingFaceTB/SmolLM2-135M-Instruct"):
+    """Generate topic labels for clusters using OpenRouter API."""
+
+    def __init__(self, model_id: Optional[str] = None):
         """
         Initialize the topic labeler.
-        
+
         Args:
-            model_name: Hugging Face model name for topic labeling
+            model_id: OpenRouter model ID for topic labeling.
+                      Defaults to OPENROUTER_INFERENCE_MODEL_ID env var.
         """
-        self.model_name = model_name
-        self.model = None
-        self.tokenizer = None
-        self.device = "cpu"  # Use CPU by default for lightweight model
-    
-    def _load_model(self):
-        """Lazy load the SmolLM2 model."""
-        if self.model is not None:
-            return
-        
-        if not TRANSFORMERS_AVAILABLE:
-            raise ImportError(
-                "transformers not available. Install with: pip install transformers"
+        self.api_key = os.getenv("OPENROUTER_API_KEY", "")
+        self.model_id = model_id or os.getenv("OPENROUTER_INFERENCE_MODEL_ID", "")
+        self._client: Optional["OpenAI"] = None
+
+    def _get_client(self) -> "OpenAI":
+        """Get or create OpenRouter client."""
+        if not OPENAI_AVAILABLE:
+            raise ImportError("openai not available. Install with: pip install openai")
+        if not self.api_key:
+            raise ValueError("OPENROUTER_API_KEY is not set")
+        if not self.model_id:
+            raise ValueError("OPENROUTER_INFERENCE_MODEL_ID is not set (or pass model_id)")
+        if self._client is None:
+            self._client = OpenAI(
+                base_url="https://openrouter.ai/api/v1",
+                api_key=self.api_key,
             )
-        
-        print(f"Loading SmolLM2 model: {self.model_name} (HF_HOME={HF_HOME})...")
-        self.tokenizer = AutoTokenizer.from_pretrained(self.model_name)
-        self.model = AutoModelForCausalLM.from_pretrained(self.model_name).to(self.device)
-        print("SmolLM2 model loaded successfully.")
-    
+        return self._client
+
     def generate_topic_label(
         self,
         sample_entries: List[str],
         max_samples: int = 5,
         max_entry_length: int = 300,
-        max_new_tokens: int = 10,
-        temperature: float = 0.3
+        max_new_tokens: int = 64,
+        temperature: float = 0.3,
+        existing_labels: Optional[List[str]] = None
     ) -> str:
         """
         Generate a topic label for a cluster based on sample entries.
-        
+
         Args:
             sample_entries: List of journal entry texts from the cluster
             max_samples: Maximum number of samples to use
             max_entry_length: Maximum characters per entry
             max_new_tokens: Maximum tokens to generate for the label
             temperature: Sampling temperature (lower = more deterministic)
-        
+            existing_labels: Labels already used for other clusters; new label must be distinct
+
         Returns:
-            A short topic label (2-5 words)
+            A short topic label (ideally 2–5 words)
         """
-        self._load_model()
-        
+        client = self._get_client()
+
         # Combine sample entries into a single document
         samples = sample_entries[:max_samples]
-        # Truncate long entries to keep prompt manageable
         truncated_samples = [
-            s[:max_entry_length] + "..." if len(s) > max_entry_length else s 
+            s[:max_entry_length] + "..." if len(s) > max_entry_length else s
             for s in samples
         ]
-        
-        # Format entries for the prompt
         cluster_entries = "\n\n".join([f"Entry {i+1}: {entry}" for i, entry in enumerate(truncated_samples)])
-        
-        # Create the prompt
+
+        existing_section = ""
+        if existing_labels:
+            existing_section = f"\nThe following labels are already in use for other clusters: {existing_labels}.\nYour label MUST be meaningfully different from all of these—do not repeat or paraphrase them.\n"
+
         prompt = f"""You are an expert at labeling topics from journal entries.
 
 Your task is to generate a short, coherent topic title that describes the common theme across the following journal entries.
 Requirements:
-- The title MUST be 2 to 5 words long
-- The title MUST be descriptive and specific
-- The title MUST NOT be a sentence
-- The title MUST NOT contain punctuation
-- The title MUST summarize the shared theme
-- The title MUST sound natural and human-readable
-- DO NOT explain your answer
-- ONLY output the title. DO NOT include any other text or formatting, such as "The Common Theme is:" or "The Topic is:" or "assistant" or any other text.
-
+- The title should be 2 to 5 words long
+- The title should be descriptive and specific to THIS set of entries
+- Focus on the most specific, concrete theme—not broad life categories (e.g. avoid "Personal Reflections", "Daily Life", "Social Interactions")
+- The label should describe what specifically these entries are about, not just a generic category
+- The title should not be a full sentence
+- Do not include punctuation or explanations
+- Output only the title, nothing else
+{existing_section}
 Journal entries:
 {cluster_entries}
 
 Topic title:"""
-        
-        # Generate topic label
+
         try:
-            messages = [{"role": "user", "content": prompt}]
-            input_text = self.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-            inputs = self.tokenizer.encode(input_text, return_tensors="pt").to(self.device)
-            
-            outputs = self.model.generate(
-                inputs,
-                max_new_tokens=max_new_tokens,
+            response = client.chat.completions.create(
+                model=self.model_id,
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=max_new_tokens,
                 temperature=temperature,
-                top_p=0.9,
-                do_sample=True,
-                pad_token_id=self.tokenizer.eos_token_id
             )
-
-            # Decode and extract the label
-            full_output = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
-            
-            # Extract just the generated title after the prompt
-            # The model output includes the prompt, so we need to extract just the new text
-            if "Topic title:" in full_output:
-                label = full_output.split("Topic title:")[-1].strip()
-            else:
-                label = full_output[len(input_text):].strip()
-
-            # Clean up the label
-            label = label.split("\n")[1:]  # Take only second line (get rid of first line which is "assistant")
-            label = " ".join(label)
-            label = label.strip('.,!?;:"\'')  # Remove punctuation
-            #remove the string "The Common Theme is:", if it exists
-            if "The Common Theme is:" in label:
-                label = label.replace("The Common Theme is:", "").strip()
+            raw = (response.choices[0].message.content or "").strip()
+            # Generic cleanup: use first line only, strip punctuation and quotes
+            label = raw.split("\n")[0].strip() if raw else ""
+            label = label.strip('.,!?;:"\'')
+            if not label:
+                return "Unlabeled Cluster, no label generated"
             print(f"Label: {label}")
-            
-            # Validate length (2-5 words)
-            # words = label.split()
-            # if len(words) < 2:
-            #     return "Unlabeled Cluster, length too short"
-            # elif len(words) > 5:
-            #     label = " ".join(words[:5])
-            
-            return label if label else "Unlabeled Cluster, no label generated"
-            
+            return label
         except Exception as e:
             print(f"Error generating label: {e}")
             return "Unlabeled Cluster, error generating label"
     
+    def generate_cluster_summary(
+        self,
+        sample_entries: List[str],
+        topic_label: Optional[str] = None,
+        max_samples: int = 8,
+        max_entry_length: int = 400,
+        max_new_tokens: int = 200,
+        temperature: float = 0.4
+    ) -> str:
+        """
+        Generate a multi-sentence summary for a cluster.
+
+        Args:
+            sample_entries: List of journal entry texts from the cluster
+            topic_label: Optional topic label already generated for the cluster
+            max_samples: Maximum number of samples to use
+            max_entry_length: Maximum characters per entry
+            max_new_tokens: Maximum tokens to generate for the summary
+            temperature: Sampling temperature
+
+        Returns:
+            A 2-3 sentence summary describing the cluster
+        """
+        client = self._get_client()
+
+        samples = sample_entries[:max_samples]
+        truncated_samples = [
+            s[:max_entry_length] + "..." if len(s) > max_entry_length else s
+            for s in samples
+        ]
+        cluster_entries = "\n\n".join([f"Entry {i+1}: {entry}" for i, entry in enumerate(truncated_samples)])
+
+        label_context = f'The cluster has been labeled: "{topic_label}".\n\n' if topic_label else ""
+
+        prompt = f"""You are an expert at analyzing patterns in personal journal entries.
+
+{label_context}Below are journal entries that belong to the same cluster (they share a common theme or topic):
+
+{cluster_entries}
+
+Write a concise 1-2 sentence summary that:
+1. Describes what this cluster is broadly about
+2. Highlights the kinds of experiences or thoughts found in these entries
+3. Identifies 2-3 common themes or patterns
+
+Output only the summary paragraph, nothing else."""
+
+        try:
+            response = client.chat.completions.create(
+                model=self.model_id,
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=max_new_tokens,
+                temperature=temperature,
+            )
+            summary = (response.choices[0].message.content or "").strip()
+            if not summary:
+                return "No summary available."
+            print(f"Summary: {summary[:80]}...")
+            return summary
+        except Exception as e:
+            print(f"Error generating summary: {e}")
+            return "Summary could not be generated."
+
+    def generate_summaries_for_clusters(
+        self,
+        cluster_samples: Dict[int, List[str]],
+        topic_labels: Optional[Dict[int, str]] = None,
+        show_progress: bool = True
+    ) -> Dict[int, str]:
+        """
+        Generate summaries for multiple clusters.
+
+        Args:
+            cluster_samples: Dict mapping cluster_id to list of sample entry texts
+            topic_labels: Optional dict mapping cluster_id to topic label
+            show_progress: Whether to show progress
+
+        Returns:
+            Dict mapping cluster_id to summary text
+        """
+        summaries = {}
+        cluster_ids = list(cluster_samples.keys())
+
+        if show_progress:
+            print(f"\nGenerating summaries for {len(cluster_ids)} clusters...")
+
+        for i, cluster_id in enumerate(cluster_ids):
+            if show_progress:
+                print(f"  [{i+1}/{len(cluster_ids)}] Cluster {cluster_id} summary...", end=" ", flush=True)
+            try:
+                label = (topic_labels or {}).get(cluster_id)
+                summary = self.generate_cluster_summary(cluster_samples[cluster_id], topic_label=label)
+                summaries[cluster_id] = summary
+            except Exception as e:
+                print(f"Error: {e}")
+                summaries[cluster_id] = "Summary could not be generated."
+
+        return summaries
+
     def generate_labels_for_clusters(
         self,
         cluster_samples: Dict[int, List[str]],
@@ -404,7 +485,11 @@ Topic title:"""
                 print(f"  [{i+1}/{len(cluster_ids)}] Cluster {cluster_id}...", end=" ", flush=True)
             
             try:
-                label = self.generate_topic_label(cluster_samples[cluster_id])
+                existing = [labels[cid] for cid in cluster_ids if cid in labels]
+                label = self.generate_topic_label(
+                    cluster_samples[cluster_id],
+                    existing_labels=existing if existing else None
+                )
                 labels[cluster_id] = label
                 if show_progress:
                     print(f"→ {label}")
@@ -810,6 +895,79 @@ def analyze_entry_lengths(entries: List[JournalEntry]) -> Dict:
     }
 
 
+def _compute_and_save_umap_2d(user_id: int) -> None:
+    """
+    Compute 2D UMAP visualization coordinates for ALL of a user's embedded entries
+    and persist them to journal_entries.umap_x / umap_y.
+
+    Uses fixed parameters (n_neighbors=15, min_dist=0.1, euclidean) to keep
+    coordinates consistent with what the visualization API endpoint expects.
+    Runs on every entry with an embedding (not just date-filtered ones) so the
+    scatter-plot layout is stable across different clustering runs.
+
+    Opens and closes its own short-lived session so the caller is not required to
+    hold a connection open during the (potentially long) UMAP computation.
+    """
+    if not UMAP_AVAILABLE:
+        print("WARNING: umap-learn not available – skipping 2D coord persistence.")
+        return
+
+    # --- Phase 1: load embeddings, then immediately close the DB session ---
+    db = SessionLocal()
+    try:
+        all_entries = db.query(JournalEntry).filter(
+            JournalEntry.user_id == user_id,
+            JournalEntry.embedding != None  # noqa: E711
+        ).order_by(JournalEntry.created_at.asc()).all()
+
+        if not all_entries:
+            return
+
+        print(f"\n--- Computing 2D UMAP coordinates for {len(all_entries)} entries ---")
+
+        entry_ids: list[int] = []
+        embedding_list = []
+        for e in all_entries:
+            emb = e.embedding
+            if hasattr(emb, 'tolist'):
+                embedding_list.append(np.array(emb, dtype=np.float32))
+            elif isinstance(emb, list):
+                embedding_list.append(np.array(emb, dtype=np.float32))
+            else:
+                embedding_list.append(np.array(list(emb), dtype=np.float32))
+            entry_ids.append(e.id)
+    finally:
+        db.close()
+
+    # --- Phase 2: run UMAP with no DB connection held ---
+    all_embeddings = np.array(embedding_list)
+    reducer = umap.UMAP(
+        n_components=2,
+        n_neighbors=15,
+        min_dist=0.1,
+        metric='euclidean',
+        random_state=42
+    )
+    embedding_2d = reducer.fit_transform(all_embeddings)
+
+    # --- Phase 3: save results in a fresh, short-lived session ---
+    db = SessionLocal()
+    try:
+        from sqlalchemy import update as sa_update
+        update_rows = [
+            {"id": entry_ids[i], "umap_x": float(embedding_2d[i, 0]), "umap_y": float(embedding_2d[i, 1])}
+            for i in range(len(entry_ids))
+        ]
+        db.execute(sa_update(JournalEntry), update_rows)
+        db.commit()
+        print(f"Saved 2D UMAP coordinates for {len(entry_ids)} entries.")
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
+
+
 def run_clustering(
     user_id: int = 1,
     min_cluster_size: Optional[int] = None,
@@ -825,7 +983,7 @@ def run_clustering(
     umap_metric: str = 'cosine',
     assign_noise: bool = True,  # New parameter
     generate_topics: bool = False,
-    topic_model: str = "HuggingFaceTB/SmolLM2-135M-Instruct",
+    topic_model: str = "",  # default: use OPENROUTER_INFERENCE_MODEL_ID
     metadata_db: Optional[str] = None,
     limit: Optional[int] = None,
     visualize: bool = False,
@@ -860,8 +1018,8 @@ def run_clustering(
         umap_n_neighbors: UMAP neighbors - lower = more clusters (default: 8)
         umap_metric: UMAP distance metric (default: 'cosine')
         assign_noise: Whether to assign noise points to nearest cluster (default: True)
-        generate_topics: Whether to generate topic labels using SmolLM2 (default: False)
-        topic_model: Hugging Face model name for topic labeling (default: "HuggingFaceTB/SmolLM2-135M-Instruct")
+        generate_topics: Whether to generate topic labels via OpenRouter (default: False)
+        topic_model: OpenRouter model ID for topic labeling (default: from OPENROUTER_INFERENCE_MODEL_ID)
         metadata_db: Deprecated - metadata is now stored in PostgreSQL
         limit: Maximum number of entries to load (None for all)
         visualize: Whether to generate visualization plots
@@ -930,7 +1088,16 @@ def run_clustering(
         if len(embeddings) == 0:
             print("No embeddings found. Run generate_embeddings.py first.")
             return
-        
+
+        # Detach all ORM objects from the session so their already-loaded attribute
+        # values remain accessible in Python memory, then close the connection
+        # immediately.  Holding the session open across the multi-minute ML pipeline
+        # (HDBSCAN → topic labelling → UMAP) leaves the PostgreSQL connection sitting
+        # "idle in transaction" for the entire duration, which exhausts the pool and
+        # blocks admin queries.
+        db.expunge_all()
+        db.close()
+
         print(f"Embeddings shape: {embeddings.shape}")
         
         # Analyze entry lengths
@@ -1060,28 +1227,43 @@ def run_clustering(
             else:
                 print("\n--- Generating Topic Labels ---")
                 
-                # Collect sample entries for each cluster
+                # Collect sample entries for each cluster (most representative first:
+                # centroid entry if available, then by membership probability descending)
                 cluster_samples = {}
                 for info in cluster_infos:
-                    # Get entries in this cluster (primary assignment)
-                    cluster_entry_ids = [
-                        a.entry_id for a in assignments
+                    cluster_assignments = [
+                        (a.entry_id, a.membership_probability)
+                        for a in assignments
                         if a.cluster_id == info.cluster_id and a.is_primary
                     ]
-                    # Get top 5 entry contents
-                    sample_contents = []
-                    for eid in cluster_entry_ids[:5]:
-                        if eid in entry_map:
-                            sample_contents.append(entry_map[eid].content)
+                    cluster_assignments.sort(key=lambda x: x[1], reverse=True)
+                    entry_ids_ordered = [eid for eid, _ in cluster_assignments]
+                    if info.centroid_entry_id is not None and info.centroid_entry_id in entry_map:
+                        if info.centroid_entry_id in entry_ids_ordered:
+                            entry_ids_ordered.remove(info.centroid_entry_id)
+                        entry_ids_ordered = [info.centroid_entry_id] + entry_ids_ordered
+                    cluster_entry_ids = entry_ids_ordered[:8]
+                    sample_contents = [
+                        entry_map[eid].content for eid in cluster_entry_ids
+                        if eid in entry_map
+                    ]
                     cluster_samples[info.cluster_id] = sample_contents
                 
                 # Generate labels
-                labeler = TopicLabeler(model_name=topic_model)
+                labeler = TopicLabeler(model_id=topic_model or None)
                 topic_labels = labeler.generate_labels_for_clusters(cluster_samples)
                 
                 # Update cluster_infos with topic labels
                 for info in cluster_infos:
                     info.topic_label = topic_labels.get(info.cluster_id)
+                
+                # Generate summaries
+                print("\n--- Generating Cluster Summaries ---")
+                cluster_summaries = labeler.generate_summaries_for_clusters(
+                    cluster_samples, topic_labels=topic_labels
+                )
+                for info in cluster_infos:
+                    info.summary = cluster_summaries.get(info.cluster_id)
         
         # Save to metadata database
         print("\n--- Saving to Metadata Database ---")
@@ -1108,7 +1290,8 @@ def run_clustering(
                 size=info.size,
                 persistence=info.persistence,
                 centroid_entry_id=info.centroid_entry_id,
-                topic_label=info.topic_label
+                topic_label=info.topic_label,
+                summary=info.summary
             )
         
         # Batch save assignments
@@ -1118,8 +1301,14 @@ def run_clustering(
         ]
         meta_db.batch_save_assignments(assignment_tuples)
         print(f"Saved {len(assignments)} cluster assignments")
-        
+
         meta_db.close()
+
+        # Persist 2D UMAP visualization coordinates so the API can skip recomputing them
+        try:
+            _compute_and_save_umap_2d(user_id)
+        except Exception as umap_err:
+            print(f"WARNING: Failed to save 2D UMAP coordinates (non-fatal): {umap_err}")
         
         # Show sample entries from each cluster
         print("\n--- Sample Entries per Cluster ---")
@@ -1395,10 +1584,10 @@ Examples:
     parser.add_argument("--umap-metric", type=str, default="cosine", help="UMAP distance metric (default: cosine)")
     
     # Topic generation parameters
-    parser.add_argument("--generate-topics", action="store_true", 
-                       help="Generate topic labels using SmolLM2")
-    parser.add_argument("--topic-model", type=str, default="HuggingFaceTB/SmolLM2-135M-Instruct",
-                       help="Hugging Face model for topic labeling (default: HuggingFaceTB/SmolLM2-135M-Instruct)")
+    parser.add_argument("--generate-topics", action="store_true",
+                       help="Generate topic labels via OpenRouter")
+    parser.add_argument("--topic-model", type=str, default="",
+                       help="OpenRouter model ID for topic labeling (default: OPENROUTER_INFERENCE_MODEL_ID)")
     
     # Other options
     parser.add_argument("--metadata-db", type=str, default=None, help="Deprecated: metadata is now stored in PostgreSQL")

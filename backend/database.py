@@ -21,14 +21,27 @@ engine = create_engine(
     pool_size=10,  # Number of connections to maintain
     max_overflow=20,  # Maximum number of connections beyond pool_size
     connect_args={
-        "connect_timeout": 10,  # Connection timeout in seconds
-        "options": "-c statement_timeout=30000"  # 30 second statement timeout
+        "connect_timeout": 10,       # Initial TCP connection timeout (seconds)
+        # statement_timeout:              kills a query that runs longer than 30 s
+        # idle_in_transaction_session_timeout: kills a connection that sits "idle in
+        #   transaction" (open txn, no active query) for longer than 60 s.  This is
+        #   the DB-side safety net for the scenario where Python code holds a session
+        #   open between queries (e.g. during CPU-bound work) and never commits or
+        #   rolls back, causing connections to pile up in pg_stat_activity.
+        "options": "-c statement_timeout=30000 -c idle_in_transaction_session_timeout=60000",
+        # TCP keepalives detect dead connections in ~80s (30s idle + 10s * 5 probes)
+        # without this, a dropped connection can hang for hours
+        "keepalives": 1,
+        "keepalives_idle": 30,
+        "keepalives_interval": 10,
+        "keepalives_count": 5,
     }
 )
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
-# Enable pgvector extension with retry logic
+# Called from app lifespan (main.py), not at import time, so the server can bind
+# before connecting to the database (avoids blocking/crashing before listen on 0.0.0.0).
 def enable_pgvector_extension():
     """Enable the pgvector extension in the database with retry logic."""
     max_retries = 5
@@ -49,13 +62,12 @@ def enable_pgvector_extension():
                 print(f"Failed to enable pgvector extension after {max_retries} attempts: {e}")
                 raise
 
-# Enable extension on import
-enable_pgvector_extension()
-
-
 def get_db():
     db = SessionLocal()
     try:
         yield db
+    except Exception:
+        db.rollback()
+        raise
     finally:
         db.close()

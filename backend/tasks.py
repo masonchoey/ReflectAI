@@ -77,6 +77,10 @@ class DatabaseTask(Task):
     def after_return(self, *args, **kwargs):
         """Close database session after task completion."""
         if self._db is not None:
+            try:
+                self._db.rollback()
+            except Exception:
+                pass
             self._db.close()
             self._db = None
 
@@ -355,14 +359,15 @@ def analyze_emotion_task(self, entry_id: int):
         sorted_results = sorted(results, key=lambda x: x["score"], reverse=True)
         top_emotion = sorted_results[0]
 
+        all_emotions = [
+            {"label": r["label"], "score": r["score"]} for r in sorted_results
+        ]
+
         entry.emotion = top_emotion["label"]
         entry.emotion_score = top_emotion["score"]
+        entry.all_emotions = all_emotions
         db.commit()
         db.refresh(entry)
-
-        all_emotions = [
-            {"label": r["label"], "score": r["score"]} for r in sorted_results[:5]
-        ]
 
         return {
             "status": "success",

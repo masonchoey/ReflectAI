@@ -1,9 +1,10 @@
 import os
+import math
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Depends, HTTPException, status, Response
+from fastapi import FastAPI, Depends, HTTPException, status, Response, Body
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, load_only
 from typing import List, Optional
 from datetime import datetime, timezone, timedelta
 import numpy as np
@@ -13,6 +14,7 @@ from jose import JWTError, jwt
 from env import load_root_env
 
 from database import engine, get_db, Base
+from database import enable_pgvector_extension
 from models import JournalEntry, User, ClusteringRun, Cluster, EntryClusterAssignment
 from schemas import (
     JournalEntryCreate, JournalEntryUpdate, JournalEntryResponse,
@@ -21,9 +23,12 @@ from schemas import (
     TokenizationResponse, GoogleAuthRequest, AuthResponse, UserResponse,
     ClusteringRunRequest, ClusteringRunResponse, ClusterInfoResponse, ClusterPoint, 
     ClusterVisualizationResponse, ClusterMembership, EntryClusterMembershipsResponse,
-    ClusterEntriesResponse, EntryClusterInfo,
-    TaskStatusResponse, TherapyQuestionRequest,
+    ClusterEntriesResponse, EntryClusterInfo, 
+    TherapyQuestionRequest,
+    TaskStatusResponse, ClusteringRecommendResponse, RecommendedClusterParams,
+    BulkAnalyzeResponse, BulkAnalyzeRequest
 )
+from sqlalchemy import text, func
 from tasks import (
     vectorize_entry,
     vectorize_all_entries,
@@ -54,21 +59,19 @@ GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "")
 security = HTTPBearer(auto_error=False)
 
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    """Lifespan context manager for startup/shutdown tasks."""
-    # Initialize database tables with retry logic
+def _init_db_sync() -> None:
+    """Synchronous DB init; run via executor so it never blocks the event loop."""
     import time
     from sqlalchemy.exc import OperationalError
-    
+
     max_retries = 5
     retry_delay = 2
-    
+
     for attempt in range(max_retries):
         try:
             Base.metadata.create_all(bind=engine)
             print("Database tables initialized successfully")
-            break
+            return
         except OperationalError as e:
             if attempt < max_retries - 1:
                 print(f"Database not ready yet (attempt {attempt + 1}/{max_retries}): {e}")
@@ -76,12 +79,39 @@ async def lifespan(app: FastAPI):
                 time.sleep(retry_delay)
             else:
                 print(f"Warning: Failed to initialize database tables after {max_retries} attempts: {e}")
-                print("Tables will be created on first database access")
         except Exception as e:
             print(f"Warning: Failed to create database tables: {e}")
-            break
-    
-    # Wake the Celery worker immediately on startup so it's ready for tasks
+            return
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Lifespan context manager for startup/shutdown tasks."""
+    import asyncio
+
+    loop = asyncio.get_event_loop()
+
+    async def _init_db_background():
+        """Run DB table creation and pgvector setup in the background so the
+        server can bind and serve requests (e.g. the frontend) immediately."""
+        try:
+            await asyncio.wait_for(loop.run_in_executor(None, _init_db_sync), timeout=30.0)
+        except asyncio.TimeoutError:
+            print("Warning: Database initialization timed out after 30s")
+        except Exception as e:
+            print(f"Warning: Database initialization failed: {e}")
+
+        try:
+            await asyncio.wait_for(
+                loop.run_in_executor(None, enable_pgvector_extension), timeout=15.0
+            )
+        except Exception as e:
+            print(f"Warning: Could not ensure pgvector extension: {e}")
+
+    # Fire DB init as a background task — server binds immediately without waiting.
+    asyncio.create_task(_init_db_background())
+
+    # Wake the Celery worker (already runs in a background thread internally)
     ensure_worker_running()
 
     yield
@@ -217,6 +247,7 @@ def entry_to_response(entry: JournalEntry) -> JournalEntryResponse:
         edited_at=entry.edited_at,
         emotion=entry.emotion,
         emotion_score=entry.emotion_score,
+        all_emotions=entry.all_emotions,
         has_embedding=entry.embedding is not None
     )
 
@@ -338,10 +369,35 @@ def get_entries(
     db: Session = Depends(get_db)
 ):
     """Get all journal entries for the authenticated user."""
-    entries = db.query(JournalEntry).filter(
+    rows = db.query(
+        JournalEntry.id,
+        JournalEntry.user_id,
+        JournalEntry.title,
+        JournalEntry.content,
+        JournalEntry.created_at,
+        JournalEntry.edited_at,
+        JournalEntry.emotion,
+        JournalEntry.emotion_score,
+        JournalEntry.all_emotions,
+        (JournalEntry.embedding.isnot(None)).label('has_embedding'),
+    ).filter(
         JournalEntry.user_id == current_user.id
     ).order_by(JournalEntry.created_at.desc()).all()
-    return [entry_to_response(e) for e in entries]
+    return [
+        JournalEntryResponse(
+            id=r.id,
+            user_id=r.user_id,
+            title=r.title,
+            content=r.content,
+            created_at=r.created_at,
+            edited_at=r.edited_at,
+            emotion=r.emotion,
+            emotion_score=r.emotion_score,
+            all_emotions=r.all_emotions,
+            has_embedding=r.has_embedding,
+        )
+        for r in rows
+    ]
 
 
 @app.get("/entries/{entry_id}", response_model=JournalEntryResponse)
@@ -351,13 +407,35 @@ def get_entry(
     db: Session = Depends(get_db)
 ):
     """Get a specific journal entry (must belong to authenticated user)."""
-    entry = db.query(JournalEntry).filter(
+    row = db.query(
+        JournalEntry.id,
+        JournalEntry.user_id,
+        JournalEntry.title,
+        JournalEntry.content,
+        JournalEntry.created_at,
+        JournalEntry.edited_at,
+        JournalEntry.emotion,
+        JournalEntry.emotion_score,
+        JournalEntry.all_emotions,
+        (JournalEntry.embedding.isnot(None)).label('has_embedding'),
+    ).filter(
         JournalEntry.id == entry_id,
         JournalEntry.user_id == current_user.id
     ).first()
-    if entry is None:
+    if row is None:
         raise HTTPException(status_code=404, detail="Entry not found")
-    return entry_to_response(entry)
+    return JournalEntryResponse(
+        id=row.id,
+        user_id=row.user_id,
+        title=row.title,
+        content=row.content,
+        created_at=row.created_at,
+        edited_at=row.edited_at,
+        emotion=row.emotion,
+        emotion_score=row.emotion_score,
+        all_emotions=row.all_emotions,
+        has_embedding=row.has_embedding,
+    )
 
 
 @app.put("/entries/{entry_id}", response_model=JournalEntryResponse)
@@ -404,11 +482,11 @@ def analyze_emotion(
     Returns a task_id that can be polled at GET /tasks/{task_id}.
     On SUCCESS the result contains: entry_id, emotion, emotion_score, all_emotions.
     """
-    entry = db.query(JournalEntry).filter(
+    exists = db.query(JournalEntry.id).filter(
         JournalEntry.id == entry_id,
         JournalEntry.user_id == current_user.id
     ).first()
-    if entry is None:
+    if exists is None:
         raise HTTPException(status_code=404, detail="Entry not found")
 
     task = analyze_emotion_task.delay(entry_id)
@@ -421,6 +499,52 @@ def analyze_emotion(
     )
 
 
+ADMIN_EMAIL = "mason@choey.com"
+
+
+@app.post("/admin/bulk-analyze", response_model=BulkAnalyzeResponse)
+def bulk_analyze_emotions(
+    body: BulkAnalyzeRequest = Body(default_factory=BulkAnalyzeRequest),
+    current_user: User = Depends(require_auth),
+    db: Session = Depends(get_db)
+):
+    """Queue emotion analysis for all entries belonging to a user that are
+    missing emotion data. Admin-only. Specify user_id or email to target another user;
+    omit both to use the current user."""
+    if current_user.email != ADMIN_EMAIL:
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+    if body.user_id is not None:
+        target_user = db.query(User).filter(User.id == body.user_id).first()
+        if target_user is None:
+            raise HTTPException(status_code=404, detail=f"User with id {body.user_id} not found")
+    elif body.email is not None and body.email.strip():
+        target_user = db.query(User).filter(User.email == body.email.strip()).first()
+        if target_user is None:
+            raise HTTPException(status_code=404, detail=f"User with email {body.email!r} not found")
+    else:
+        target_user = current_user
+
+    rows = db.query(JournalEntry.id).filter(
+        JournalEntry.user_id == target_user.id,
+        (JournalEntry.emotion == None) | (JournalEntry.emotion_score == None) | (JournalEntry.all_emotions == None)
+    ).all()
+
+    task_ids = []
+    entry_ids = [r.id for r in rows]
+    for eid in entry_ids:
+        task = analyze_emotion_task.delay(eid)
+        task_ids.append(task.id)
+
+    ensure_worker_running()
+
+    return BulkAnalyzeResponse(
+        queued=len(entry_ids),
+        task_ids=task_ids,
+        entry_ids=entry_ids
+    )
+
+
 @app.post("/entries/{entry_id}/tokenize", response_model=TaskStatusResponse)
 def tokenize_entry(
     entry_id: int,
@@ -429,11 +553,11 @@ def tokenize_entry(
 ):
     """Queue tokenization for a journal entry (must belong to authenticated user).
     Poll GET /tasks/{task_id} for result; on SUCCESS, result has entry_id, text, token_count, tokens, token_ids."""
-    entry = db.query(JournalEntry).filter(
+    exists = db.query(JournalEntry.id).filter(
         JournalEntry.id == entry_id,
         JournalEntry.user_id == current_user.id
     ).first()
-    if entry is None:
+    if exists is None:
         raise HTTPException(status_code=404, detail="Entry not found")
 
     task = tokenize_entry_task.delay(entry_id)
@@ -448,13 +572,13 @@ def embed_entry(
     db: Session = Depends(get_db)
 ):
     """Queue embedding generation for a journal entry (must belong to authenticated user)."""
-    entry = db.query(JournalEntry).filter(
+    exists = db.query(JournalEntry.id).filter(
         JournalEntry.id == entry_id,
         JournalEntry.user_id == current_user.id
     ).first()
-    if entry is None:
+    if exists is None:
         raise HTTPException(status_code=404, detail="Entry not found")
-    
+
     # Queue vectorization task
     task = vectorize_entry.delay(entry_id)
     ensure_worker_running()
@@ -491,18 +615,27 @@ def find_similar_entries(
     db: Session = Depends(get_db)
 ):
     """Find similar journal entries (only searches user's own entries)."""
-    entry = db.query(JournalEntry).filter(
+    entry = db.query(JournalEntry).options(load_only(
+        JournalEntry.id,
+        JournalEntry.embedding,
+    )).filter(
         JournalEntry.id == entry_id,
         JournalEntry.user_id == current_user.id
     ).first()
     if entry is None:
         raise HTTPException(status_code=404, detail="Entry not found")
-    
+
     if entry.embedding is None:
         raise HTTPException(status_code=400, detail="Entry has no embedding. Call /entries/{entry_id}/embed first.")
-    
+
     # Get all other entries with embeddings for this user
-    other_entries = db.query(JournalEntry).filter(
+    other_entries = db.query(JournalEntry).options(load_only(
+        JournalEntry.id,
+        JournalEntry.content,
+        JournalEntry.created_at,
+        JournalEntry.emotion,
+        JournalEntry.embedding,
+    )).filter(
         JournalEntry.id != entry_id,
         JournalEntry.user_id == current_user.id,
         JournalEntry.embedding != None
@@ -612,6 +745,112 @@ def create_clustering_run(
         )
 
 
+@app.get("/clustering/recommend", response_model=ClusteringRecommendResponse)
+def recommend_clustering_params(
+    current_user: User = Depends(require_auth),
+    db: Session = Depends(get_db)
+):
+    """Analyze the user's journal entries and return heuristically recommended clustering parameters."""
+    entries = db.query(JournalEntry).options(load_only(
+        JournalEntry.id,
+        JournalEntry.content,
+        JournalEntry.emotion,
+    )).filter(
+        JournalEntry.user_id == current_user.id,
+        JournalEntry.content.isnot(None)
+    ).all()
+
+    n = len(entries)
+
+    if n < 5:
+        return ClusteringRecommendResponse(
+            params=RecommendedClusterParams(
+                min_cluster_size=2,
+                min_samples=1,
+                membership_threshold=0.05,
+                cluster_selection_epsilon=0.0,
+                umap_n_components=5,
+                umap_n_neighbors=5,
+                umap_min_dist=0.0,
+            ),
+            reasoning=f"Not enough entries ({n}) for data-driven recommendations. Using defaults — add more entries for better suggestions.",
+            embedding_coverage=0.0,
+        )
+
+    from hdbscan_clustering import analyze_entry_lengths
+    length_stats = analyze_entry_lengths(entries)
+    avg_words = float(length_stats["word_count"]["mean"])
+    std_words = float(length_stats["word_count"]["std"])
+    cv = std_words / avg_words if avg_words > 0 else 0.0
+
+    emotions = [e.emotion for e in entries if e.emotion]
+    distinct_emotions = len(set(emotions))
+    n_embedded = db.query(func.count(JournalEntry.id)).filter(
+        JournalEntry.user_id == current_user.id,
+        JournalEntry.embedding.isnot(None)
+    ).scalar()
+    embedding_coverage = n_embedded / n if n > 0 else 0.0
+
+    # --- Heuristic formulas ---
+
+    # min_cluster_size: ~5% of entries; scale down for high emotion variety
+    base_mcs = max(2, round(n * 0.05))
+    if distinct_emotions >= 6:
+        emotion_scale = 0.7
+    elif distinct_emotions >= 4:
+        emotion_scale = 0.85
+    else:
+        emotion_scale = 1.0
+    min_cluster_size = max(2, min(20, round(base_mcs * emotion_scale)))
+
+    # min_samples: 1 for clean data, 2 for high-variance/noisy journals
+    min_samples = 2 if cv > 0.8 else 1
+
+    # membership_threshold: low to allow multi-cluster membership for diverse journals
+    membership_threshold = 0.05 if (distinct_emotions >= 5 or cv > 0.8) else 0.1
+
+    # umap_n_neighbors: scales with sqrt(n) — more neighbors = more global structure
+    umap_n_neighbors = max(5, min(50, round(math.sqrt(n) * 1.5)))
+
+    # umap_n_components: log-scaled — more entries benefit from more dimensions
+    umap_n_components = max(5, min(30, round(math.log2(max(n, 2)) * 1.5)))
+
+    # cluster_selection_epsilon: small positive value merges nearby micro-clusters for sparse data
+    cluster_selection_epsilon = 0.1 if n < 20 else 0.0
+
+    # umap_min_dist: always 0.0 for tightest text clusters
+    umap_min_dist = 0.0
+
+    # Build human-readable reasoning
+    reasoning_parts = [f"Based on {n} entries"]
+    reasoning_parts.append(f"averaging {round(avg_words)} words")
+    if distinct_emotions > 0:
+        emotion_frac = len(emotions) / n
+        reasoning_parts.append(
+            f"{distinct_emotions} distinct emotion{'s' if distinct_emotions != 1 else ''} detected"
+            f" across {round(emotion_frac * 100)}% of entries"
+        )
+    if cv > 0.8:
+        reasoning_parts.append("high length variance suggests noisy/diverse writing")
+    if embedding_coverage < 0.5:
+        reasoning_parts.append(f"only {round(embedding_coverage * 100)}% of entries have embeddings — run 'Embed All' for best results")
+    reasoning = ". ".join(reasoning_parts) + "."
+
+    return ClusteringRecommendResponse(
+        params=RecommendedClusterParams(
+            min_cluster_size=min_cluster_size,
+            min_samples=min_samples,
+            membership_threshold=round(membership_threshold, 2),
+            cluster_selection_epsilon=round(cluster_selection_epsilon, 1),
+            umap_n_components=umap_n_components,
+            umap_n_neighbors=umap_n_neighbors,
+            umap_min_dist=umap_min_dist,
+        ),
+        reasoning=reasoning,
+        embedding_coverage=round(embedding_coverage, 3),
+    )
+
+
 @app.get("/clustering/runs", response_model=List[ClusteringRunResponse])
 def get_clustering_runs(
     current_user: User = Depends(require_auth),
@@ -646,149 +885,188 @@ def get_cluster_visualization(
     db: Session = Depends(get_db)
 ):
     """Get cluster visualization data for a specific run."""
-    # Verify the run belongs to the user
     run = db.query(ClusteringRun).filter(
         ClusteringRun.id == run_id,
         ClusteringRun.user_id == current_user.id
     ).first()
-    
+
     if run is None:
         raise HTTPException(status_code=404, detail="Clustering run not found")
-    
-    # Get all entries with embeddings for this user, sorted by created_at
-    entries = db.query(JournalEntry).filter(
-        JournalEntry.user_id == current_user.id,
-        JournalEntry.embedding != None
-    ).order_by(JournalEntry.created_at.asc()).all()
-    
-    if not entries:
-        raise HTTPException(status_code=400, detail="No entries with embeddings found")
-    
+
     # Get cluster assignments for this run
     assignments = db.query(EntryClusterAssignment).filter(
         EntryClusterAssignment.run_id == run_id
     ).all()
-    
-    # Create mappings: entry_id -> primary cluster assignment AND all memberships
-    entry_to_cluster = {}  # Primary cluster only
-    entry_to_all_memberships = {}  # All cluster memberships
-    
+
+    # Build entry_id -> primary assignment and all-memberships maps
+    entry_to_cluster: dict = {}
+    entry_to_all_memberships: dict = {}
+
     for assignment in assignments:
-        # Track all memberships
-        if assignment.entry_id not in entry_to_all_memberships:
-            entry_to_all_memberships[assignment.entry_id] = []
-        entry_to_all_memberships[assignment.entry_id].append(assignment)
-        
-        # Track primary cluster
+        entry_to_all_memberships.setdefault(assignment.entry_id, []).append(assignment)
         if assignment.is_primary or assignment.entry_id not in entry_to_cluster:
             entry_to_cluster[assignment.entry_id] = {
                 'cluster_id': assignment.cluster_id,
                 'probability': assignment.membership_probability
             }
-    
-    # Get cluster info
-    clusters = db.query(Cluster).filter(
-        Cluster.run_id == run_id
-    ).all()
-    
+
+    assigned_entry_ids = set(entry_to_cluster.keys())
+    if not assigned_entry_ids:
+        raise HTTPException(status_code=400, detail="No entries found for this clustering run")
+
+    # Get cluster metadata
+    clusters = db.query(Cluster).filter(Cluster.run_id == run_id).all()
     cluster_info_map = {}
     for cluster in clusters:
-        cluster_name = cluster.topic_label or f"Cluster {cluster.cluster_id}"
         cluster_info_map[cluster.cluster_id] = {
-            'name': cluster_name,
+            'name': cluster.topic_label or f"Cluster {cluster.cluster_id}",
             'size': cluster.size,
             'persistence': cluster.persistence,
-            'topic_label': cluster.topic_label
+            'topic_label': cluster.topic_label,
+            'summary': cluster.summary
         }
-    
-    # Filter entries that have assignments in this run
-    entries_with_assignments = [e for e in entries if e.id in entry_to_cluster]
-    
-    if not entries_with_assignments:
-        raise HTTPException(status_code=400, detail="No entries found for this clustering run")
-    
-    # Extract embeddings
-    embedding_list = []
-    for e in entries_with_assignments:
-        emb = e.embedding
-        # Convert to numpy array if needed
-        if hasattr(emb, 'tolist'):
-            embedding_list.append(emb)
-        elif isinstance(emb, list):
-            embedding_list.append(np.array(emb, dtype=np.float32))
-        else:
-            embedding_list.append(np.array(list(emb), dtype=np.float32))
-    embeddings = np.array(embedding_list)
-    
-    # Use UMAP to reduce to 2D for visualization
-    try:
-        import umap
-        reducer = umap.UMAP(
-            n_components=2,
-            n_neighbors=15,
-            min_dist=0.1,
-            metric='euclidean',
-            random_state=42
+
+    # --- Fast path: use pre-computed 2D coordinates stored on journal_entries ---
+    # Load only the lightweight columns; skip the 384-dim embedding vector entirely.
+    slim_entries = (
+        db.query(JournalEntry)
+        .options(load_only(
+            JournalEntry.id,
+            JournalEntry.title,
+            JournalEntry.created_at,
+            JournalEntry.umap_x,
+            JournalEntry.umap_y,
+        ))
+        .filter(
+            JournalEntry.user_id == current_user.id,
+            JournalEntry.id.in_(assigned_entry_ids),
         )
-        embedding_2d = reducer.fit_transform(embeddings)
-    except ImportError:
-        raise HTTPException(
-            status_code=503,
-            detail="UMAP not available. Install with: pip install umap-learn"
-        )
-    
-    # Build points list
+        .order_by(JournalEntry.created_at.asc())
+        .all()
+    )
+
+    has_coords = bool(slim_entries) and all(
+        e.umap_x is not None and e.umap_y is not None for e in slim_entries
+    )
+
+    if has_coords:
+        entries_with_assignments = slim_entries
+        umap_coords = {e.id: (e.umap_x, e.umap_y) for e in slim_entries}
+    else:
+        # --- Migration guardrail: coordinates missing (pre-feature run or first time) ---
+        # Compute UMAP on the fly over ALL user entries, save results, then continue.
+        all_entries = db.query(JournalEntry).options(load_only(
+            JournalEntry.id,
+            JournalEntry.title,
+            JournalEntry.created_at,
+            JournalEntry.embedding,
+        )).filter(
+            JournalEntry.user_id == current_user.id,
+            JournalEntry.embedding != None  # noqa: E711
+        ).order_by(JournalEntry.created_at.asc()).all()
+
+        if not all_entries:
+            raise HTTPException(status_code=400, detail="No entries with embeddings found")
+
+        entry_ids_for_umap = [e.id for e in all_entries]
+        embedding_list = []
+        for e in all_entries:
+            emb = e.embedding
+            if hasattr(emb, 'tolist'):
+                embedding_list.append(np.array(emb, dtype=np.float32))
+            elif isinstance(emb, list):
+                embedding_list.append(np.array(emb, dtype=np.float32))
+            else:
+                embedding_list.append(np.array(list(emb), dtype=np.float32))
+        embeddings = np.array(embedding_list)
+
+        # Release the DB transaction before the UMAP computation so the connection
+        # does not sit "idle in transaction" for the duration of the CPU-bound work.
+        # expunge_all() keeps loaded attribute values accessible on the now-detached
+        # objects (title, id, etc.) without requiring any further DB round-trips.
+        db.expunge_all()
+        db.rollback()
+
+        try:
+            import umap as umap_lib
+            reducer = umap_lib.UMAP(
+                n_components=2,
+                n_neighbors=15,
+                min_dist=0.1,
+                metric='euclidean',
+                random_state=42
+            )
+            embedding_2d = reducer.fit_transform(embeddings)
+        except ImportError:
+            raise HTTPException(
+                status_code=503,
+                detail="UMAP not available. Install with: pip install umap-learn"
+            )
+
+        from sqlalchemy import update as _sa_update
+        umap_coords = {}
+        update_rows = []
+        for i, entry in enumerate(all_entries):
+            x, y = float(embedding_2d[i, 0]), float(embedding_2d[i, 1])
+            umap_coords[entry.id] = (x, y)
+            update_rows.append({"id": entry_ids_for_umap[i], "umap_x": x, "umap_y": y})
+        db.execute(_sa_update(JournalEntry), update_rows)
+        db.commit()
+
+        entries_with_assignments = [e for e in all_entries if e.id in assigned_entry_ids]
+        if not entries_with_assignments:
+            raise HTTPException(status_code=400, detail="No entries found for this clustering run")
+
+    # Build response points
     points = []
-    for i, entry in enumerate(entries_with_assignments):
+    for entry in entries_with_assignments:
         assignment = entry_to_cluster[entry.id]
         cluster_id = assignment['cluster_id']
-        
-        # Handle noise points (cluster_id = -1)
-        if cluster_id == -1:
-            cluster_name = "Noise"
-        else:
-            cluster_name = cluster_info_map.get(cluster_id, {}).get('name', f"Cluster {cluster_id}")
-        
-        # Get all memberships for this entry
+        cluster_name = (
+            "Noise" if cluster_id == -1
+            else cluster_info_map.get(cluster_id, {}).get('name', f"Cluster {cluster_id}")
+        )
+
         all_memberships = []
         for membership in sorted(
-            entry_to_all_memberships.get(entry.id, []), 
-            key=lambda x: x.membership_probability, 
+            entry_to_all_memberships.get(entry.id, []),
+            key=lambda x: x.membership_probability,
             reverse=True
         ):
-            membership_cluster_name = (
-                "Noise" if membership.cluster_id == -1 
+            mem_cluster_name = (
+                "Noise" if membership.cluster_id == -1
                 else cluster_info_map.get(membership.cluster_id, {}).get('name', f"Cluster {membership.cluster_id}")
             )
             all_memberships.append(ClusterMembership(
                 cluster_id=membership.cluster_id,
-                cluster_name=membership_cluster_name,
+                cluster_name=mem_cluster_name,
                 membership_probability=membership.membership_probability,
                 is_primary=membership.is_primary
             ))
-        
+
+        x, y = umap_coords[entry.id]
         points.append(ClusterPoint(
             entry_id=entry.id,
             title=entry.title,
-            x=float(embedding_2d[i, 0]),
-            y=float(embedding_2d[i, 1]),
+            x=x,
+            y=y,
             cluster_id=cluster_id,
             cluster_name=cluster_name,
             membership_probability=assignment['probability'],
             all_memberships=all_memberships
         ))
-    
-    # Build clusters list
+
     clusters_list = [
         ClusterInfoResponse(
             cluster_id=cluster.cluster_id,
             size=cluster.size,
             persistence=cluster.persistence,
-            topic_label=cluster.topic_label
+            topic_label=cluster.topic_label,
+            summary=cluster.summary
         )
         for cluster in clusters
     ]
-    
+
     return ClusterVisualizationResponse(
         run_id=run_id,
         points=points,
@@ -808,14 +1086,14 @@ def get_entry_cluster_memberships(
     If run_id is not provided, uses the latest clustering run.
     """
     # Verify the entry belongs to the user
-    entry = db.query(JournalEntry).filter(
+    exists = db.query(JournalEntry.id).filter(
         JournalEntry.id == entry_id,
         JournalEntry.user_id == current_user.id
     ).first()
-    
-    if entry is None:
+
+    if exists is None:
         raise HTTPException(status_code=404, detail="Entry not found")
-    
+
     # Get the clustering run
     if run_id is None:
         # Get latest run for this user
@@ -936,7 +1214,12 @@ def get_cluster_entries(
     
     # Get the actual entry data
     entry_ids = [a.entry_id for a in assignments]
-    entries = db.query(JournalEntry).filter(
+    entries = db.query(JournalEntry).options(load_only(
+        JournalEntry.id,
+        JournalEntry.title,
+        JournalEntry.content,
+        JournalEntry.created_at,
+    )).filter(
         JournalEntry.id.in_(entry_ids),
         JournalEntry.user_id == current_user.id
     ).all()

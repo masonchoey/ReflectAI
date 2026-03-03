@@ -32,7 +32,11 @@ class JournalEntry(Base):
     edited_at = Column(DateTime(timezone=True), nullable=True)
     emotion = Column(String(50), nullable=True)
     emotion_score = Column(Float, nullable=True)
+    all_emotions = Column(JSON, nullable=True)  # Full ranked emotion breakdown [{label, score}, ...]
     embedding = Column(Vector(384), nullable=True)  # Granite-embedding-30m-english dense embedding vector (384 dimensions)
+    umap_x = Column(Float, nullable=True)  # 2D UMAP x-coordinate for visualization (computed during clustering)
+    umap_y = Column(Float, nullable=True)  # 2D UMAP y-coordinate for visualization (computed during clustering)
+    summary=Column(Text, nullable=True)
 
     # Relationship to user
     user = relationship("User", back_populates="entries")
@@ -70,6 +74,7 @@ class Cluster(Base):
     persistence = Column(Float, nullable=True)
     centroid_entry_id = Column(Integer, nullable=True)
     topic_label = Column(Text, nullable=True)
+    summary = Column(Text, nullable=True)
 
     # Relationships
     run = relationship("ClusteringRun", back_populates="clusters")

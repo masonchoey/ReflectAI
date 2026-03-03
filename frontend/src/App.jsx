@@ -9,6 +9,56 @@ const API_URL = import.meta.env.VITE_API_URL || (
 )
 const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID || ''
 
+const CLUSTER_PARAMS_STORAGE_KEY = 'reflectai_cluster_params'
+
+const DEFAULT_CLUSTER_PARAMS = {
+  minClusterSize: 2,
+  minSamples: 1,
+  membershipThreshold: 0.05,
+  clusterSelectionEpsilon: 0.0,
+  umapNComponents: 5,
+  umapNNeighbors: 8,
+  umapMinDist: 0.0
+}
+
+const CLUSTER_PARAMS_BOUNDS = {
+  minClusterSize: { min: 2, max: 20 },
+  minSamples: { min: 1, max: 10 },
+  membershipThreshold: { min: 0.05, max: 0.5 },
+  clusterSelectionEpsilon: { min: 0, max: 1 },
+  umapNComponents: { min: 5, max: 30 },
+  umapNNeighbors: { min: 5, max: 50 },
+  umapMinDist: { min: 0, max: 1 }
+}
+
+function loadClusterParamsFromStorage(userId) {
+  try {
+    const key = `${CLUSTER_PARAMS_STORAGE_KEY}_${userId}`
+    const raw = localStorage.getItem(key)
+    if (!raw) return null
+    const parsed = JSON.parse(raw)
+    const out = {}
+    for (const [key, val] of Object.entries(parsed)) {
+      if (!(key in CLUSTER_PARAMS_BOUNDS)) continue
+      const { min, max } = CLUSTER_PARAMS_BOUNDS[key]
+      const num = Number(val)
+      if (Number.isFinite(num)) out[key] = Math.min(max, Math.max(min, num))
+    }
+    return Object.keys(out).length === Object.keys(CLUSTER_PARAMS_BOUNDS).length ? out : null
+  } catch {
+    return null
+  }
+}
+
+function saveClusterParamsToStorage(userId, params) {
+  try {
+    const key = `${CLUSTER_PARAMS_STORAGE_KEY}_${userId}`
+    localStorage.setItem(key, JSON.stringify(params))
+  } catch (e) {
+    console.warn('Failed to save cluster params to localStorage', e)
+  }
+}
+
 function App() {
   const [entries, setEntries] = useState([])
   const [title, setTitle] = useState('')
@@ -54,11 +104,20 @@ function App() {
   const [therapyLoading, setTherapyLoading] = useState(false)
   const [therapyConversation, setTherapyConversation] = useState([]) // [{role, content, steps}]
   const [therapyStepsExpanded, setTherapyStepsExpanded] = useState({}) // {messageIdx: bool}
+  // Recommended settings state
+  const [recommendLoading, setRecommendLoading] = useState(false)
+  const [recommendReasoning, setRecommendReasoning] = useState(null)
+
+  // Admin bulk-analyze state
+  const [bulkAnalyzing, setBulkAnalyzing] = useState(false)
+  const [bulkAnalyzeProgress, setBulkAnalyzeProgress] = useState(null)
+  const [bulkAnalyzeTarget, setBulkAnalyzeTarget] = useState('')
 
   // Auth state
   const [user, setUser] = useState(null)
   const [token, setToken] = useState(() => localStorage.getItem('auth_token'))
   const [authLoading, setAuthLoading] = useState(true)
+  const skipNextClusterParamsSaveRef = useRef(false)
 
   // Get auth headers for API requests
   const getAuthHeaders = useCallback(() => {
@@ -101,6 +160,39 @@ function App() {
 
     verifyToken()
   }, [token])
+
+  // Load persisted cluster params when user is set
+  useEffect(() => {
+    if (!user?.id) return
+    const saved = loadClusterParamsFromStorage(user.id)
+    if (!saved) return
+    setMinClusterSize(saved.minClusterSize)
+    setMinSamples(saved.minSamples)
+    setMembershipThreshold(saved.membershipThreshold)
+    setClusterSelectionEpsilon(saved.clusterSelectionEpsilon)
+    setUmapNComponents(saved.umapNComponents)
+    setUmapNNeighbors(saved.umapNNeighbors)
+    setUmapMinDist(saved.umapMinDist)
+    skipNextClusterParamsSaveRef.current = true
+  }, [user?.id])
+
+  // Persist cluster params when they change (and user is logged in)
+  useEffect(() => {
+    if (!user?.id) return
+    if (skipNextClusterParamsSaveRef.current) {
+      skipNextClusterParamsSaveRef.current = false
+      return
+    }
+    saveClusterParamsToStorage(user.id, {
+      minClusterSize,
+      minSamples,
+      membershipThreshold,
+      clusterSelectionEpsilon,
+      umapNComponents,
+      umapNNeighbors,
+      umapMinDist
+    })
+  }, [user?.id, minClusterSize, minSamples, membershipThreshold, clusterSelectionEpsilon, umapNComponents, umapNNeighbors, umapMinDist])
 
   // Initialize Google Sign-In
   useEffect(() => {
@@ -175,6 +267,9 @@ function App() {
 
   // Handle sign out
   const handleSignOut = () => {
+    if (user?.id) {
+      localStorage.removeItem(`${CLUSTER_PARAMS_STORAGE_KEY}_${user.id}`)
+    }
     localStorage.removeItem('auth_token')
     setToken(null)
     setUser(null)
@@ -217,6 +312,14 @@ function App() {
       }
       const data = await response.json()
       setEntries(data)
+      // Pre-populate the breakdown state so the dropdown is instant (no ML re-run needed)
+      const preloaded = {}
+      data.forEach(entry => {
+        if (entry.all_emotions && entry.all_emotions.length > 0) {
+          preloaded[Number(entry.id)] = entry.all_emotions
+        }
+      })
+      setEmotionResults(prev => ({ ...prev, ...preloaded }))
       setError(null)
     } catch (err) {
       setError('Could not load entries. Please try again.')
@@ -278,6 +381,37 @@ function App() {
     }
   }
 
+  const fetchRecommendedSettings = async () => {
+    setRecommendLoading(true)
+    setRecommendReasoning(null)
+    try {
+      const response = await fetch(`${API_URL}/clustering/recommend`, {
+        headers: getAuthHeaders(),
+      })
+      if (!response.ok) {
+        if (response.status === 401) {
+          handleSignOut()
+          return
+        }
+        throw new Error('Failed to fetch recommended settings')
+      }
+      const data = await response.json()
+      const p = data.params
+      setMinClusterSize(p.min_cluster_size)
+      setMinSamples(p.min_samples)
+      setMembershipThreshold(p.membership_threshold)
+      setClusterSelectionEpsilon(p.cluster_selection_epsilon)
+      setUmapNComponents(p.umap_n_components)
+      setUmapNNeighbors(p.umap_n_neighbors)
+      setUmapMinDist(p.umap_min_dist)
+      setRecommendReasoning(data.reasoning)
+    } catch (err) {
+      setRecommendReasoning('Could not load recommendations. Please try again.')
+    } finally {
+      setRecommendLoading(false)
+    }
+  }
+
   const runClustering = async () => {
     try {
       setRunningClustering(true)
@@ -313,7 +447,11 @@ function App() {
       const requestBody = {
         min_cluster_size: minClusterSize,
         min_samples: minSamples,
-        membership_threshold: membershipThreshold
+        membership_threshold: membershipThreshold,
+        cluster_selection_epsilon: clusterSelectionEpsilon,
+        umap_n_components: umapNComponents,
+        umap_n_neighbors: umapNNeighbors,
+        umap_min_dist: umapMinDist,
       }
       if (requestStartDate) requestBody.start_date = requestStartDate
       if (requestEndDate) requestBody.end_date = requestEndDate
@@ -528,15 +666,17 @@ function App() {
 
           if (status.status === 'SUCCESS' && status.result) {
             const result = status.result
+            // Use result.entry_id from backend as source of truth so we update the correct entry
+            const id = Number(result.entry_id ?? entryId)
             setEntries(prevEntries => prevEntries.map(entry =>
-              entry.id === entryId
+              Number(entry.id) === id
                 ? { ...entry, emotion: result.emotion, emotion_score: result.emotion_score }
                 : entry
             ))
-            setEmotionResults(prev => ({ ...prev, [entryId]: result.all_emotions }))
-            setExpandedEmotionEntries(prev => ({ ...prev, [entryId]: true }))
+            setEmotionResults(prev => ({ ...prev, [id]: result.all_emotions }))
+            setExpandedEmotionEntries(prev => ({ ...prev, [id]: true }))
             setError(null)
-            setAnalyzingId(null)
+            setAnalyzingId(prev => (prev === entryId || prev === id ? null : prev))
           } else if (status.status === 'FAILURE' || status.status === 'REVOKED') {
             throw new Error(status.error || 'Emotion analysis task failed')
           } else {
@@ -673,6 +813,90 @@ function App() {
       get_journal_statistics: 'Checked statistics',
     }
     return labels[toolName] || toolName
+  const handleBulkAnalyze = async () => {
+    try {
+      setBulkAnalyzing(true)
+      setBulkAnalyzeProgress({ queued: 0, completed: 0, failed: 0, total: 0 })
+
+      const trimmed = bulkAnalyzeTarget.trim()
+      const body = {}
+      if (trimmed !== '') {
+        const asNum = parseInt(trimmed, 10)
+        if (String(asNum) === trimmed) {
+          body.user_id = asNum
+        } else {
+          body.email = trimmed
+        }
+      }
+
+      const response = await fetch(`${API_URL}/admin/bulk-analyze`, {
+        method: 'POST',
+        headers: getAuthHeaders(),
+        body: JSON.stringify(body)
+      })
+      if (!response.ok) {
+        const errData = await response.json().catch(() => ({}))
+        const msg = typeof errData.detail === 'string' ? errData.detail : 'Failed to queue bulk analysis'
+        throw new Error(msg)
+      }
+
+      const data = await response.json()
+      const { task_ids, entry_ids, queued } = data
+
+      if (queued === 0) {
+        setBulkAnalyzeProgress({ queued: 0, completed: 0, failed: 0, total: 0, done: true })
+        setBulkAnalyzing(false)
+        return
+      }
+
+      setBulkAnalyzeProgress({ queued, completed: 0, failed: 0, total: queued, done: false })
+
+      let completed = 0
+      let failed = 0
+
+      const pollTask = (taskId, entryId) => new Promise((resolve) => {
+        const poll = async () => {
+          try {
+            const statusRes = await fetch(`${API_URL}/tasks/${taskId}`, { headers: getAuthHeaders() })
+            if (!statusRes.ok) { failed++; setBulkAnalyzeProgress(p => ({ ...p, failed })); resolve(); return }
+            const status = await statusRes.json()
+
+            if (status.status === 'SUCCESS' && status.result) {
+              const result = status.result
+              const id = Number(result.entry_id ?? entryId)
+              setEntries(prev => prev.map(e =>
+                Number(e.id) === id
+                  ? { ...e, emotion: result.emotion, emotion_score: result.emotion_score }
+                  : e
+              ))
+              setEmotionResults(prev => ({ ...prev, [id]: result.all_emotions }))
+              completed++
+              setBulkAnalyzeProgress(p => ({ ...p, completed }))
+              resolve()
+            } else if (status.status === 'FAILURE' || status.status === 'REVOKED') {
+              failed++
+              setBulkAnalyzeProgress(p => ({ ...p, failed }))
+              resolve()
+            } else {
+              setTimeout(poll, 2000)
+            }
+          } catch {
+            failed++
+            setBulkAnalyzeProgress(p => ({ ...p, failed }))
+            resolve()
+          }
+        }
+        setTimeout(poll, 1000)
+      })
+
+      await Promise.all(task_ids.map((taskId, i) => pollTask(taskId, entry_ids[i])))
+      setBulkAnalyzeProgress(p => ({ ...p, done: true }))
+      setBulkAnalyzing(false)
+    } catch (err) {
+      setError('Bulk analysis failed. Please try again.')
+      setBulkAnalyzing(false)
+      setBulkAnalyzeProgress(null)
+    }
   }
 
   const toggleEmotionBreakdown = (entryId) => {
@@ -785,6 +1009,9 @@ function App() {
         
         <div className="user-menu">
           <div className="user-info">
+            {user.email === 'mason@choey.com' && (
+              <span className="admin-badge">ADMIN</span>
+            )}
             {user.picture && (
               <img 
                 src={user.picture} 
@@ -799,6 +1026,36 @@ function App() {
             Sign Out
           </button>
         </div>
+        {user.email === 'mason@choey.com' && (
+          <div className="admin-panel">
+            <button
+              onClick={handleBulkAnalyze}
+              disabled={bulkAnalyzing}
+              className="admin-bulk-analyze-button"
+              title="Admin: Run sentiment analysis on unanalyzed entries for the specified user (or you if blank)"
+            >
+              {bulkAnalyzing ? '⚙ Analyzing…' : '⚙ Bulk Analyze'}
+            </button>
+            {bulkAnalyzeProgress && (
+              <span className="admin-bulk-progress">
+                {bulkAnalyzeProgress.done
+                  ? bulkAnalyzeProgress.total === 0
+                    ? 'All entries already analyzed'
+                    : `Done — ${bulkAnalyzeProgress.completed}/${bulkAnalyzeProgress.total} analyzed${bulkAnalyzeProgress.failed > 0 ? `, ${bulkAnalyzeProgress.failed} failed` : ''}`
+                  : `${bulkAnalyzeProgress.completed}/${bulkAnalyzeProgress.total} analyzed…`}
+              </span>
+            )}
+            <input
+              type="text"
+              value={bulkAnalyzeTarget}
+              onChange={(e) => setBulkAnalyzeTarget(e.target.value)}
+              placeholder="User ID or email (blank = you)"
+              disabled={bulkAnalyzing}
+              className="admin-bulk-analyze-input"
+              aria-label="User ID or email for bulk analyze"
+            />
+          </div>
+        )}
       </header>
 
       {error && <div className="error">{error}</div>}
@@ -854,18 +1111,25 @@ function App() {
                       </div>
                       {editingId !== entry.id && (
                         <div className="entry-actions">
-                          <button 
-                            className="analyze-button"
-                            onClick={() => toggleEmotionBreakdown(entry.id)}
-                            disabled={analyzingId === entry.id || !emotionResults[entry.id]}
-                            aria-label="Toggle emotion breakdown"
-                          >
-                            {analyzingId === entry.id
-                              ? '🔄 Analyzing...'
-                              : emotionResults[entry.id]
-                                ? (expandedEmotionEntries[entry.id] ? '🙈 Hide Breakdown' : '🔍 View Breakdown')
-                                : '🔮 Preparing analysis...'}
-                          </button>
+                          {!entry.emotion && (
+                            <button 
+                              className="analyze-button"
+                              onClick={() => handleAnalyzeEmotion(entry.id)}
+                              disabled={analyzingId === entry.id}
+                              aria-label="Analyze emotion"
+                            >
+                              {analyzingId === entry.id ? '🔄 Analyzing emotion...' : '🔮 Analyze emotion'}
+                            </button>
+                          )}
+                          {entry.emotion && (
+                            <button 
+                              className="analyze-button"
+                              onClick={() => toggleEmotionBreakdown(entry.id)}
+                              aria-label="Toggle emotion breakdown"
+                            >
+                              {expandedEmotionEntries[entry.id] ? '🙈 Hide Breakdown' : '🔍 View Breakdown'}
+                            </button>
+                          )}
                           <button 
                             className="edit-button"
                             onClick={() => handleEdit(entry)}
@@ -917,32 +1181,45 @@ function App() {
                         
                         {entry.emotion && (
                           <div className="emotion-display">
-                            <div className="primary-emotion">
+                            <button
+                              type="button"
+                              className="emotion-dropdown-trigger"
+                              onClick={() => toggleEmotionBreakdown(entry.id)}
+                              aria-expanded={!!expandedEmotionEntries[entry.id]}
+                              aria-label="Toggle emotion breakdown"
+                            >
                               <span className="emotion-emoji">{getEmotionEmoji(entry.emotion)}</span>
                               <span className="emotion-label">{entry.emotion}</span>
                               <span className="emotion-confidence">
                                 {(entry.emotion_score * 100).toFixed(1)}% confidence
                               </span>
-                            </div>
+                              <span className={`emotion-chevron ${expandedEmotionEntries[entry.id] ? 'open' : ''}`} aria-hidden>▼</span>
+                            </button>
                             
-                            {emotionResults[entry.id] && expandedEmotionEntries[entry.id] && (
+                            {expandedEmotionEntries[entry.id] && (
                               <div className="emotion-breakdown">
-                                <span className="breakdown-label">Top emotions:</span>
-                                <div className="emotion-bars">
-                                  {emotionResults[entry.id].slice(0, 5).map((emotion, idx) => (
-                                    <div key={idx} className="emotion-bar-item">
-                                      <span className="bar-emoji">{getEmotionEmoji(emotion.label)}</span>
-                                      <span className="bar-label">{emotion.label}</span>
-                                      <div className="bar-container">
-                                        <div 
-                                          className="bar-fill"
-                                          style={{ width: `${emotion.score * 100}%` }}
-                                        />
-                                      </div>
-                                      <span className="bar-score">{(emotion.score * 100).toFixed(1)}%</span>
+                                {emotionResults[entry.id] ? (
+                                  <>
+                                    <span className="breakdown-label">Top emotions:</span>
+                                    <div className="emotion-bars">
+                                      {emotionResults[entry.id].slice(0, 5).map((emotion, idx) => (
+                                        <div key={idx} className="emotion-bar-item">
+                                          <span className="bar-emoji">{getEmotionEmoji(emotion.label)}</span>
+                                          <span className="bar-label">{emotion.label}</span>
+                                          <div className="bar-container">
+                                            <div 
+                                              className="bar-fill"
+                                              style={{ width: `${emotion.score * 100}%` }}
+                                            />
+                                          </div>
+                                          <span className="bar-score">{(emotion.score * 100).toFixed(1)}%</span>
+                                        </div>
+                                      ))}
                                     </div>
-                                  ))}
-                                </div>
+                                  </>
+                                ) : (
+                                  <span className="breakdown-loading">Loading…</span>
+                                )}
                               </div>
                             )}
                           </div>
@@ -1031,6 +1308,18 @@ function App() {
                   <p className="parameters-description">
                     Adjust these parameters to fine-tune clustering results. HDBSCAN parameters control cluster formation, while UMAP parameters control dimensionality reduction before clustering.
                   </p>
+                  <div className="suggest-settings-row">
+                    <button
+                      onClick={fetchRecommendedSettings}
+                      disabled={recommendLoading}
+                      className="suggest-settings-btn"
+                    >
+                      {recommendLoading ? 'Analyzing…' : '✦ Suggest Settings'}
+                    </button>
+                    {recommendReasoning && (
+                      <p className="recommend-hint">{recommendReasoning}</p>
+                    )}
+                  </div>
                   
                   <div className="parameter-group">
                     <label htmlFor="min-cluster-size">
@@ -1266,6 +1555,18 @@ function App() {
                   <p className="parameters-description">
                     Adjust these parameters to fine-tune clustering results. HDBSCAN parameters control cluster formation, while UMAP parameters control dimensionality reduction before clustering.
                   </p>
+                  <div className="suggest-settings-row">
+                    <button
+                      onClick={fetchRecommendedSettings}
+                      disabled={recommendLoading}
+                      className="suggest-settings-btn"
+                    >
+                      {recommendLoading ? 'Analyzing…' : '✦ Suggest Settings'}
+                    </button>
+                    {recommendReasoning && (
+                      <p className="recommend-hint">{recommendReasoning}</p>
+                    )}
+                  </div>
                   
                   <div className="parameter-group">
                     <label htmlFor="min-cluster-size-2">
@@ -1671,8 +1972,14 @@ function ClusterVisualization({ data, hoveredPoint, onPointHover }) {
   const [dimensions, setDimensions] = useState({ width: 800, height: 600 })
   const [transform, setTransform] = useState({ x: 0, y: 0, scale: 1 })
   const [selectedClusterId, setSelectedClusterId] = useState(null)
+  const [clusterPanelOpen, setClusterPanelOpen] = useState(false)
+  const [showDetailedClusteringStats, setShowDetailedClusteringStats] = useState(false)
+  const [pinnedPoint, setPinnedPoint] = useState(null)
   const isPanningRef = useRef(false)
   const lastPosRef = useRef({ x: 0, y: 0 })
+  const transformRef = useRef(transform)
+  const zoomAnimationRef = useRef(null)
+  transformRef.current = transform
 
   const handleZoomIn = () => {
     setTransform(prev => ({
@@ -1708,6 +2015,94 @@ function ClusterVisualization({ data, hoveredPoint, onPointHover }) {
     return () => window.removeEventListener('resize', updateDimensions)
   }, [])
 
+  // When a cluster is selected from the legend, zoom to fit that cluster (animated)
+  useEffect(() => {
+    const ZOOM_DURATION_MS = 150
+    const easeOutCubic = (t) => 1 - (1 - t) ** 3
+
+    const applyTarget = (target) => {
+      const start = { ...transformRef.current }
+      const startTime = performance.now()
+      if (zoomAnimationRef.current) cancelAnimationFrame(zoomAnimationRef.current)
+
+      const tick = () => {
+        const elapsed = performance.now() - startTime
+        const t = Math.min(elapsed / ZOOM_DURATION_MS, 1)
+        const eased = easeOutCubic(t)
+        setTransform({
+          x: start.x + (target.x - start.x) * eased,
+          y: start.y + (target.y - start.y) * eased,
+          scale: start.scale + (target.scale - start.scale) * eased
+        })
+        if (t < 1) zoomAnimationRef.current = requestAnimationFrame(tick)
+      }
+      zoomAnimationRef.current = requestAnimationFrame(tick)
+    }
+
+    if (selectedClusterId === null) {
+      applyTarget({ x: 0, y: 0, scale: 1 })
+      return () => {
+        if (zoomAnimationRef.current) {
+          cancelAnimationFrame(zoomAnimationRef.current)
+          zoomAnimationRef.current = null
+        }
+      }
+    }
+    const padding = 50
+    const width = dimensions.width - 2 * padding
+    const height = dimensions.height - 2 * padding
+    if (width <= 0 || height <= 0) return
+
+    const isInSelectedCluster = (point) => {
+      if (point.all_memberships && point.all_memberships.length > 0) {
+        const primary = point.all_memberships.find(m => m.is_primary)
+        return primary && primary.cluster_id === selectedClusterId
+      }
+      return point.cluster_id === selectedClusterId
+    }
+    const clusterPoints = data.points.filter(isInSelectedCluster)
+    if (clusterPoints.length === 0) return
+
+    const allX = data.points.map(p => p.x)
+    const allY = data.points.map(p => p.y)
+    const xMin = Math.min(...allX)
+    const xMax = Math.max(...allX)
+    const yMin = Math.min(...allY)
+    const yMax = Math.max(...allY)
+    const xRange = xMax - xMin || 1
+    const yRange = yMax - yMin || 1
+    const dataCenterX = (xMin + xMax) / 2
+    const dataCenterY = (yMin + yMax) / 2
+    const baseScale = Math.min(
+      (dimensions.width - 2 * padding) / xRange,
+      (dimensions.height - 2 * padding) / yRange
+    )
+
+    const cMinX = Math.min(...clusterPoints.map(p => p.x))
+    const cMaxX = Math.max(...clusterPoints.map(p => p.x))
+    const cMinY = Math.min(...clusterPoints.map(p => p.y))
+    const cMaxY = Math.max(...clusterPoints.map(p => p.y))
+    const crx = cMaxX - cMinX || xRange * 0.1
+    const cry = cMaxY - cMinY || yRange * 0.1
+    const margin = 1.2
+    const scaleFit = Math.min(width / (crx * margin), height / (cry * margin))
+    const newScale = Math.min(5, Math.max(0.4, scaleFit / baseScale))
+    const cx = (cMinX + cMaxX) / 2
+    const cy = (cMinY + cMaxY) / 2
+    const target = {
+      x: -baseScale * newScale * (cx - dataCenterX),
+      y: -baseScale * newScale * (cy - dataCenterY),
+      scale: newScale
+    }
+    applyTarget(target)
+    return () => {
+      if (zoomAnimationRef.current) {
+        cancelAnimationFrame(zoomAnimationRef.current)
+        zoomAnimationRef.current = null
+      }
+    }
+  }, [selectedClusterId, data.points, dimensions.width, dimensions.height])
+
   // Calculate bounds and scaling
   const xValues = data.points.map(p => p.x)
   const yValues = data.points.map(p => p.y)
@@ -1733,7 +2128,7 @@ function ClusterVisualization({ data, hoveredPoint, onPointHover }) {
   // Generate colors for clusters
   const clusterColors = {}
   const uniqueClusters = [...new Set(data.points.map(p => p.cluster_id))].sort((a, b) => {
-    // Put noise (-1) at the end
+    // Put noise (-1) at the end.
     if (a === -1) return 1
     if (b === -1) return -1
     return a - b
@@ -1771,14 +2166,18 @@ function ClusterVisualization({ data, hoveredPoint, onPointHover }) {
   }
 
   const tooltipLayout = (() => {
-    if (!hoveredPoint) return null
-    const base = transformPoint(hoveredPoint.x, hoveredPoint.y)
+    const activePoint = pinnedPoint || hoveredPoint
+    if (!activePoint) return null
+    const base = transformPoint(activePoint.x, activePoint.y)
     const tooltipWidth = 280
-    // Calculate height based on number of memberships
-    const memberships = hoveredPoint.all_memberships || []
+    // Number of membership rows we actually show (1 when details off, else all)
+    const memberships = activePoint.all_memberships || []
+    const visibleCount = memberships.length > 0
+      ? (showDetailedClusteringStats ? memberships.length : 1)
+      : 1
     const baseHeight = 60
     const membershipHeight = 28
-    const tooltipHeight = baseHeight + (memberships.length * membershipHeight)
+    const tooltipHeight = (visibleCount <= 1 ? 44 : baseHeight) + (visibleCount * membershipHeight)
     let x = base.x + 12
     let y = base.y - tooltipHeight - 12
 
@@ -1797,6 +2196,8 @@ function ClusterVisualization({ data, hoveredPoint, onPointHover }) {
   })()
 
   const handleMouseDown = (event) => {
+    if (event.target.getAttribute?.('data-entry-id') != null) return
+    setPinnedPoint(null)
     isPanningRef.current = true
     lastPosRef.current = { x: event.clientX, y: event.clientY }
   }
@@ -1819,6 +2220,7 @@ function ClusterVisualization({ data, hoveredPoint, onPointHover }) {
 
   return (
     <div className="cluster-viz-container">
+      <div className="cluster-viz-main">
       <div className="cluster-zoom-controls">
         <button
           type="button"
@@ -1886,13 +2288,19 @@ function ClusterVisualization({ data, hoveredPoint, onPointHover }) {
           return (
             <circle
               key={point.entry_id}
+              data-entry-id={point.entry_id}
               cx={pos.x}
               cy={pos.y}
-              r={isHovered ? 8 : 5}
+              r={isHovered || pinnedPoint?.entry_id === point.entry_id ? 8 : 5}
               fill={color}
-              stroke={isHovered ? '#fff' : 'none'}
-              strokeWidth={isHovered ? 2 : 0}
+              stroke={isHovered || pinnedPoint?.entry_id === point.entry_id ? '#fff' : 'none'}
+              strokeWidth={isHovered || pinnedPoint?.entry_id === point.entry_id ? 2 : 0}
               opacity={opacity}
+              onMouseDown={(e) => e.stopPropagation()}
+              onClick={() => {
+                if (!isHoverable) return
+                setPinnedPoint(prev => prev?.entry_id === point.entry_id ? null : point)
+              }}
               onMouseEnter={() => {
                 if (isHoverable) {
                   onPointHover(point)
@@ -1913,9 +2321,16 @@ function ClusterVisualization({ data, hoveredPoint, onPointHover }) {
         })}
       </svg>
 
-      {hoveredPoint && tooltipLayout && (
+      {(pinnedPoint || hoveredPoint) && tooltipLayout && (() => {
+        const activePoint = pinnedPoint || hoveredPoint
+        const memberships = activePoint.all_memberships || []
+        const visibleCount = memberships.length > 0
+          ? (showDetailedClusteringStats ? memberships.length : 1)
+          : 1
+        const isCompact = visibleCount <= 1
+        return (
         <div
-          className="cluster-tooltip"
+          className={`cluster-tooltip ${isCompact ? 'cluster-tooltip--compact' : ''}`}
           style={{
             left: tooltipLayout.x,
             top: tooltipLayout.y,
@@ -1924,12 +2339,15 @@ function ClusterVisualization({ data, hoveredPoint, onPointHover }) {
           }}
         >
           <div className="cluster-tooltip-title">
-            {hoveredPoint.title || 'Untitled Entry'}
+            {activePoint.title || 'Untitled Entry'}
           </div>
           <div className="cluster-tooltip-body">
-            {hoveredPoint.all_memberships && hoveredPoint.all_memberships.length > 0 ? (
+            {activePoint.all_memberships && activePoint.all_memberships.length > 0 ? (
               <div className="cluster-memberships-list">
-                {hoveredPoint.all_memberships.map((membership, idx) => (
+                {(showDetailedClusteringStats
+                  ? activePoint.all_memberships
+                  : activePoint.all_memberships.filter(m => m.is_primary)
+                ).map((membership, idx) => (
                   <div 
                     key={idx} 
                     className={`cluster-membership-tag ${membership.is_primary ? 'primary' : 'secondary'}`}
@@ -1947,29 +2365,40 @@ function ClusterVisualization({ data, hoveredPoint, onPointHover }) {
             ) : (
               <div className="cluster-membership-tag primary">
                 <span className="membership-indicator">★</span>
-                <span className="membership-name">{hoveredPoint.cluster_name}</span>
+                <span className="membership-name">{activePoint.cluster_name}</span>
                 <span className="membership-probability">
-                  {(hoveredPoint.membership_probability * 100).toFixed(0)}%
+                  {(activePoint.membership_probability * 100).toFixed(0)}%
                 </span>
               </div>
             )}
           </div>
         </div>
-      )}
+        )
+      })()}
 
       {/* Legend */}
       <div className="cluster-legend">
         <div className="legend-header">
           <h3>Clusters</h3>
-          {selectedClusterId !== null && (
+          <div className="legend-header-actions">
             <button
-              className="legend-clear-filter"
-              onClick={() => setSelectedClusterId(null)}
               type="button"
+              className={`legend-toggle-stats ${showDetailedClusteringStats ? 'active' : ''}`}
+              onClick={() => setShowDetailedClusteringStats(s => !s)}
+              aria-pressed={showDetailedClusteringStats}
             >
-              Clear Filter
+              Show detailed clustering stats
             </button>
-          )}
+            {selectedClusterId !== null && (
+              <button
+                className="legend-clear-filter"
+                onClick={() => { setSelectedClusterId(null); setClusterPanelOpen(false) }}
+                type="button"
+              >
+                Clear Filter
+              </button>
+            )}
+          </div>
         </div>
         <div className="legend-items">
           {data.clusters.map((cluster) => {
@@ -1980,7 +2409,15 @@ function ClusterVisualization({ data, hoveredPoint, onPointHover }) {
               <div 
                 key={cluster.cluster_id} 
                 className={`legend-item ${isSelected ? 'selected' : ''}`}
-                onClick={() => setSelectedClusterId(isSelected ? null : cluster.cluster_id)}
+                onClick={() => {
+                  if (isSelected) {
+                    setSelectedClusterId(null)
+                    setClusterPanelOpen(false)
+                  } else {
+                    setSelectedClusterId(cluster.cluster_id)
+                    setClusterPanelOpen(true)
+                  }
+                }}
                 style={{ cursor: 'pointer' }}
               >
                 <span
@@ -1996,7 +2433,15 @@ function ClusterVisualization({ data, hoveredPoint, onPointHover }) {
           {data.points.some(p => p.cluster_id === -1) && (
             <div 
               className={`legend-item ${selectedClusterId === -1 ? 'selected' : ''}`}
-              onClick={() => setSelectedClusterId(selectedClusterId === -1 ? null : -1)}
+              onClick={() => {
+                if (selectedClusterId === -1) {
+                  setSelectedClusterId(null)
+                  setClusterPanelOpen(false)
+                } else {
+                  setSelectedClusterId(-1)
+                  setClusterPanelOpen(false)
+                }
+              }}
               style={{ cursor: 'pointer' }}
             >
               <span
@@ -2010,6 +2455,60 @@ function ClusterVisualization({ data, hoveredPoint, onPointHover }) {
             </div>
           )}
         </div>
+      </div>
+      </div>
+
+      {/* Cluster Summary Side Panel */}
+      <div className={`cluster-summary-sidebar ${clusterPanelOpen && selectedClusterId != null && selectedClusterId !== -1 ? 'open' : ''}`}>
+        {clusterPanelOpen && selectedClusterId !== null && selectedClusterId !== -1 && (() => {
+          const cluster = data.clusters.find(c => c.cluster_id === selectedClusterId)
+          if (!cluster) return null
+          const color = clusterColors[selectedClusterId] || '#CCCCCC'
+          const name = cluster.topic_label || `Cluster ${selectedClusterId}`
+          const entryCount = data.points.filter(p => {
+            if (p.all_memberships && p.all_memberships.length > 0) {
+              const primary = p.all_memberships.find(m => m.is_primary)
+              return primary && primary.cluster_id === selectedClusterId
+            }
+            return p.cluster_id === selectedClusterId
+          }).length
+          return (
+            <div className="cluster-summary-panel">
+              <div className="cluster-summary-header">
+                <span className="cluster-summary-color" style={{ backgroundColor: color }} />
+                <h3 className="cluster-summary-title">{name}</h3>
+                <button
+                  className="cluster-summary-close"
+                  onClick={() => { setClusterPanelOpen(false); setSelectedClusterId(null) }}
+                  type="button"
+                  aria-label="Close summary"
+                >
+                  ×
+                </button>
+              </div>
+              <div className="cluster-summary-stats">
+                <span className="cluster-stat">
+                  <strong>{entryCount}</strong> entries
+                </span>
+                {cluster.persistence != null && (
+                  <span className="cluster-stat">
+                    Stability: <strong>{(cluster.persistence * 100).toFixed(0)}%</strong>
+                  </span>
+                )}
+              </div>
+              {cluster.summary ? (
+                <div className="cluster-summary-body">
+                  <h4>Summary</h4>
+                  <p>{cluster.summary}</p>
+                </div>
+              ) : (
+                <div className="cluster-summary-body cluster-summary-empty">
+                  <p>No summary available. Re-run clustering with topic generation enabled to generate summaries.</p>
+                </div>
+              )}
+            </div>
+          )
+        })()}
       </div>
     </div>
   )

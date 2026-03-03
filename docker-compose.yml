@@ -48,11 +48,12 @@ services:
       HF_DATASETS_CACHE: /tmp/.cache/huggingface
       CORS_ORIGINS: http://localhost,http://localhost:5173
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY}
+      OPENROUTER_INFERENCE_MODEL_ID: ${OPENROUTER_INFERENCE_MODEL_ID}
       LANGSMITH_TRACING_V2: ${LANGSMITH_TRACING_V2:-false}
       LANGSMITH_API_KEY: ${LANGSMITH_API_KEY}
       LANGSMITH_PROJECT: ${LANGSMITH_PROJECT:-reflectai}
     ports:
-      - "8000:8000"
+      - "8000:8001"
     volumes:
       - ./backend:/app
       - huggingface_cache:/tmp/.cache/huggingface
@@ -61,7 +62,22 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-    command: uvicorn main:app --host 0.0.0.0 --port 8000
+    command: uvicorn main:app --host 0.0.0.0 --port 8001
+
+  init-models:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: reflectai-init-models
+    environment:
+      HF_HOME: /tmp/.cache/huggingface
+      TRANSFORMERS_CACHE: /tmp/.cache/huggingface
+      HF_DATASETS_CACHE: /tmp/.cache/huggingface
+    volumes:
+      - ./backend:/app
+      - huggingface_cache:/tmp/.cache/huggingface
+    command: python download_models.py
+    restart: "no"
 
   celery-worker:
     build:
@@ -78,7 +94,10 @@ services:
       HF_HOME: /tmp/.cache/huggingface
       TRANSFORMERS_CACHE: /tmp/.cache/huggingface
       HF_DATASETS_CACHE: /tmp/.cache/huggingface
+      HF_HUB_OFFLINE: "1"
+      TRANSFORMERS_OFFLINE: "1"
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY}
+      OPENROUTER_INFERENCE_MODEL_ID: ${OPENROUTER_INFERENCE_MODEL_ID}
       LANGSMITH_TRACING_V2: ${LANGSMITH_TRACING_V2:-false}
       LANGSMITH_API_KEY: ${LANGSMITH_API_KEY}
       LANGSMITH_PROJECT: ${LANGSMITH_PROJECT:-reflectai}
@@ -90,6 +109,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      init-models:
+        condition: service_completed_successfully
     command: celery -A celery_app worker --loglevel=info --concurrency=1
 
   frontend:

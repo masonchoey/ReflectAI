@@ -24,5 +24,9 @@ COPY . .
 
 RUN mkdir -p ${HF_HOME} && chmod 777 ${HF_HOME}
 
-# Run Celery worker with idle-exit: scale to 0 after IDLE_MINUTES with empty queue
-CMD ["python", "-u", "worker_idle_exit.py"]
+# Make the startup script executable
+RUN chmod +x /app/start_worker.sh
+
+# start_worker.sh: downloads models into the volume on first boot (no-op thereafter),
+# then starts the Celery worker with HF_HUB_OFFLINE=1 so it never touches the network.
+CMD ["/app/start_worker.sh"]
