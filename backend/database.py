@@ -21,8 +21,14 @@ engine = create_engine(
     pool_size=10,  # Number of connections to maintain
     max_overflow=20,  # Maximum number of connections beyond pool_size
     connect_args={
-        "connect_timeout": 10,  # Connection timeout in seconds
-        "options": "-c statement_timeout=30000"  # 30 second statement timeout
+        "connect_timeout": 10,       # Initial TCP connection timeout (seconds)
+        "options": "-c statement_timeout=30000",  # 30 second per-statement timeout
+        # TCP keepalives detect dead connections in ~80s (30s idle + 10s * 5 probes)
+        # without this, a dropped connection can hang for hours
+        "keepalives": 1,
+        "keepalives_idle": 30,
+        "keepalives_interval": 10,
+        "keepalives_count": 5,
     }
 )
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)

@@ -57,27 +57,19 @@ GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "")
 security = HTTPBearer(auto_error=False)
 
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    """Lifespan context manager for startup/shutdown tasks."""
-    # Initialize database tables with retry logic
+def _init_db_sync() -> None:
+    """Synchronous DB init; run via executor so it never blocks the event loop."""
     import time
     from sqlalchemy.exc import OperationalError
-    
+
     max_retries = 5
     retry_delay = 2
-    
+
     for attempt in range(max_retries):
         try:
             Base.metadata.create_all(bind=engine)
-            # Add any new columns that create_all won't add to existing tables
-            with engine.begin() as conn:
-                conn.execute(text(
-                    "ALTER TABLE journal_entries "
-                    "ADD COLUMN IF NOT EXISTS all_emotions JSONB"
-                ))
             print("Database tables initialized successfully")
-            break
+            return
         except OperationalError as e:
             if attempt < max_retries - 1:
                 print(f"Database not ready yet (attempt {attempt + 1}/{max_retries}): {e}")
@@ -85,18 +77,36 @@ async def lifespan(app: FastAPI):
                 time.sleep(retry_delay)
             else:
                 print(f"Warning: Failed to initialize database tables after {max_retries} attempts: {e}")
-                print("Tables will be created on first database access")
         except Exception as e:
             print(f"Warning: Failed to create database tables: {e}")
-            break
+            return
 
-    # Enable pgvector (Supabase often has it already; non-fatal if this fails)
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Lifespan context manager for startup/shutdown tasks."""
+    import asyncio
+
+    loop = asyncio.get_event_loop()
+
+    # Run blocking DB init in a thread so it never stalls the asyncio event loop.
+    # A 30-second timeout ensures a dead DB connection can't block startup forever.
     try:
-        enable_pgvector_extension()
+        await asyncio.wait_for(loop.run_in_executor(None, _init_db_sync), timeout=30.0)
+    except asyncio.TimeoutError:
+        print("Warning: Database initialization timed out after 30s, starting anyway")
     except Exception as e:
-        print(f"Warning: Could not ensure pgvector extension (may already exist): {e}")
+        print(f"Warning: Database initialization failed: {e}")
 
-    # Wake the Celery worker immediately on startup so it's ready for tasks
+    # Enable pgvector (non-fatal, run in executor so it also can't block)
+    try:
+        await asyncio.wait_for(
+            loop.run_in_executor(None, enable_pgvector_extension), timeout=15.0
+        )
+    except Exception as e:
+        print(f"Warning: Could not ensure pgvector extension: {e}")
+
+    # Wake the Celery worker (already runs in a background thread internally)
     ensure_worker_running()
 
     yield
