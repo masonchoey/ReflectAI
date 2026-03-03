@@ -1906,6 +1906,8 @@ header .admin-panel {
   border-color: var(--accent);
   color: var(--accent);
   background: var(--accent-glow);
+}
+
 /* Cluster Summary Side Panel — overlaid inside the viz container */
 .cluster-summary-sidebar {
   position: absolute;

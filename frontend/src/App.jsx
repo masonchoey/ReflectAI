@@ -2513,5 +2513,5 @@ function ClusterVisualization({ data, hoveredPoint, onPointHover }) {
     </div>
   )
 }
-
+}
 export default App
