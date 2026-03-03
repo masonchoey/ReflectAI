@@ -16,5 +16,8 @@ pgvector==0.4.0
 umap-learn>=0.5.5
 celery==5.3.4
 redis==5.0.1
+langchain>=1.0.0
+langchain-openai>=0.2.0
+langsmith>=0.6.39
 openai==2.24.0
 tqdm==4.67.2

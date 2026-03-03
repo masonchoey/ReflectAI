@@ -217,12 +217,14 @@ class TaskStatusResponse(BaseModel):
     result: Optional[dict] = None
     error: Optional[str] = None
 
-
+# Therapy question schemas
+class TherapyQuestionRequest(BaseModel):
+    question: str
+      
 # Admin schemas
 class BulkAnalyzeRequest(BaseModel):
     user_id: Optional[int] = None
     email: Optional[str] = None
-
 
 class BulkAnalyzeResponse(BaseModel):
     queued: int

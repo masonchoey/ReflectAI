@@ -386,6 +386,30 @@ def analyze_emotion_task(self, entry_id: int):
         }
 
 
+THERAPY_SYSTEM_PROMPT = """You are a compassionate, insightful AI therapist assistant with direct access to the person's private journal entries through specialized tools. Your role is to help them gain deep self-understanding about their life patterns, emotions, experiences, and personal growth.
+
+You have access to these tools to research their journals before responding:
+- search_journals: Semantically find entries related to specific topics, themes, or events
+- get_recent_entries: See what has been happening in their life recently
+- get_entries_by_emotion: Explore entries filtered by specific emotional states
+- get_journal_themes: Discover recurring themes identified across all journal entries
+- get_emotional_timeline: Understand how emotions have shifted and evolved over time
+- get_journal_statistics: Get an overview of their journaling journey
+
+Guidelines for every response:
+1. Use tools to ground your insights in their actual journal data — typically 2–3 tools when the question benefits from it, but you may use fewer if one search is enough
+2. Search from multiple angles (e.g., search related topics, check emotional patterns, review themes)
+3. Be warm, empathetic, non-judgmental, and genuinely curious about their inner world
+4. Connect patterns you observe across multiple entries and different time periods
+5. Speak directly and personally — use "you" and "your" rather than "the user" or "based on your journal entries". Talk to them as if you know them and have been reading their journal together.
+6. Cite specific moments from their entries naturally, e.g. "I noticed that on [date] you wrote about..." rather than "based on the journal entries..."
+7. Offer thoughtful reflections and gently actionable suggestions
+8. Ask a meaningful follow-up question to invite deeper reflection
+9. Treat their journal entries with the deepest respect and sensitivity
+
+You are working with deeply personal material. Be thoughtful, compassionate, and speak directly to them as you would a trusted friend."""
+
+
 def _cosine_similarity(vec1, vec2):
     """Compute cosine similarity between two vectors (lists or arrays)."""
     a = np.array(vec1, dtype=np.float64)
@@ -501,3 +525,411 @@ def semantic_search_task(self, user_id: int, query: str, top_k: int = 5):
             "query": query,
             "message": f"Error running semantic search: {str(e)}",
         }
+
+
+@celery_app.task(base=DatabaseTask, bind=True, name="tasks.therapy_question")
+def therapy_question_task(self, user_id: int, question: str):
+    """
+    Run a therapy-style question through a LangChain 1.0 agent that uses journal tools
+    powered by LLama 3.3 70B via OpenRouter (:free tier).
+
+    OpenRouter free tier: 20 requests/minute, ~50 requests/day. Each agent turn (LLM call)
+    counts as one request; one user question can trigger 2–4+ calls. We use a recursion
+    limit and retries with backoff to stay within limits.
+
+    Args:
+        user_id: The user whose journals will be searched.
+        question: The life/reflection question to answer.
+
+    Returns:
+        dict: status, question, answer, steps (list of tool calls with observations).
+    """
+    import os
+    import time
+    from env import load_root_env
+
+    # Ensure root .env is loaded (worker may run from backend/ or other CWD)
+    load_root_env()
+
+    # Propagate LangSmith tracing env vars so the LangChain callback system
+    # picks them up even when running inside a Celery worker subprocess.
+    for _ls_var in ("LANGSMITH_TRACING_V2", "LANGSMITH_API_KEY", "LANGSMITH_PROJECT"):
+        _val = os.getenv(_ls_var)
+        if _val:
+            os.environ[_ls_var] = _val
+
+    from langchain_openai import ChatOpenAI
+    from langchain_core.tools import StructuredTool
+    from langchain.agents import create_agent
+    from langchain_core.messages import HumanMessage, AIMessage, ToolMessage
+    from pydantic import BaseModel as PydanticBaseModel, Field
+
+    db = self.db
+    openrouter_api_key = os.getenv("OPENROUTER_API_KEY", "")
+
+    if not openrouter_api_key:
+        return {"status": "error", "message": "OpenRouter API key not configured"}
+
+    # ── Tool implementations (closures over db and user_id) ──────────────────
+
+    def search_journals(query: str, top_k: int = 8) -> str:
+        try:
+            model = get_embedding_model()
+            query_embedding = model.encode(query, normalize_embeddings=True)
+            query_emb_list = (
+                query_embedding.tolist()
+                if hasattr(query_embedding, "tolist")
+                else list(query_embedding)
+            )
+            entries = db.query(JournalEntry).filter(
+                JournalEntry.user_id == user_id,
+                JournalEntry.embedding != None,
+            ).all()
+
+            if not entries:
+                return "No indexed journal entries found. The user may need to generate embeddings first."
+
+            similarities = []
+            for entry in entries:
+                emb = entry.embedding
+                if hasattr(emb, "tolist"):
+                    emb = emb.tolist()
+                elif not isinstance(emb, list):
+                    emb = list(emb)
+                similarities.append((entry, _cosine_similarity(query_emb_list, emb)))
+
+            similarities.sort(key=lambda x: x[1], reverse=True)
+            parts = []
+            for entry, score in similarities[:top_k]:
+                date_str = entry.created_at.strftime("%Y-%m-%d") if entry.created_at else "unknown date"
+                emotion_str = f" [Emotion: {entry.emotion}]" if entry.emotion else ""
+                parts.append(
+                    f"[{date_str}{emotion_str}] {entry.title or 'Untitled'}:\n{entry.content[:700]}"
+                )
+            return "\n\n---\n\n".join(parts) if parts else "No relevant entries found."
+        except Exception as e:
+            return f"Error searching journals: {str(e)}"
+
+    def get_recent_entries(count: int = 10) -> str:
+        try:
+            entries = db.query(JournalEntry).filter(
+                JournalEntry.user_id == user_id
+            ).order_by(JournalEntry.created_at.desc()).limit(count).all()
+
+            if not entries:
+                return "No journal entries found."
+
+            parts = []
+            for entry in entries:
+                date_str = entry.created_at.strftime("%Y-%m-%d") if entry.created_at else "unknown date"
+                emotion_str = f" [Emotion: {entry.emotion}]" if entry.emotion else ""
+                parts.append(
+                    f"[{date_str}{emotion_str}] {entry.title or 'Untitled'}:\n{entry.content[:700]}"
+                )
+            return "\n\n---\n\n".join(parts)
+        except Exception as e:
+            return f"Error retrieving recent entries: {str(e)}"
+
+    def get_entries_by_emotion(emotion: str) -> str:
+        try:
+            entries = db.query(JournalEntry).filter(
+                JournalEntry.user_id == user_id,
+                JournalEntry.emotion.ilike(f"%{emotion}%"),
+            ).order_by(JournalEntry.created_at.desc()).limit(10).all()
+
+            if not entries:
+                return f"No entries found with emotion matching '{emotion}'."
+
+            parts = []
+            for entry in entries:
+                date_str = entry.created_at.strftime("%Y-%m-%d") if entry.created_at else "unknown date"
+                parts.append(
+                    f"[{date_str}] {entry.title or 'Untitled'}:\n{entry.content[:600]}"
+                )
+            return "\n\n---\n\n".join(parts)
+        except Exception as e:
+            return f"Error retrieving entries by emotion: {str(e)}"
+
+    def get_journal_themes() -> str:
+        try:
+            from models import ClusteringRun, Cluster
+
+            latest_run = db.query(ClusteringRun).filter(
+                ClusteringRun.user_id == user_id
+            ).order_by(ClusteringRun.run_timestamp.desc()).first()
+
+            if latest_run is None:
+                return "No clustering analysis has been run yet. Journal themes are not available."
+
+            clusters = db.query(Cluster).filter(
+                Cluster.run_id == latest_run.id,
+                Cluster.cluster_id != -1,
+            ).order_by(Cluster.size.desc()).all()
+
+            if not clusters:
+                return "No distinct themes found in the clustering analysis."
+
+            run_date = latest_run.run_timestamp.strftime("%Y-%m-%d")
+            lines = [
+                f"Recurring journal themes (analysed {latest_run.num_entries} entries on {run_date}):"
+            ]
+            for c in clusters:
+                label = c.topic_label or f"Theme {c.cluster_id}"
+                lines.append(f"  • {label}  ({c.size} entries)")
+            return "\n".join(lines)
+        except Exception as e:
+            return f"Error retrieving journal themes: {str(e)}"
+
+    def get_emotional_timeline() -> str:
+        try:
+            from collections import defaultdict, Counter
+
+            entries = db.query(JournalEntry).filter(
+                JournalEntry.user_id == user_id,
+                JournalEntry.emotion != None,
+            ).order_by(JournalEntry.created_at.asc()).all()
+
+            if not entries:
+                return "No entries with emotion data found. Emotion analysis may not have been run yet."
+
+            weekly: dict = defaultdict(list)
+            for entry in entries:
+                if entry.created_at:
+                    weekly[entry.created_at.strftime("%Y-W%U")].append(entry.emotion)
+
+            lines = ["Emotional timeline (weekly, last 12 weeks):"]
+            for week, emotions in sorted(weekly.items())[-12:]:
+                top = Counter(emotions).most_common(3)
+                lines.append("  " + week + ": " + ", ".join(f"{e} ({c}x)" for e, c in top))
+
+            all_emotions = [e.emotion for e in entries if e.emotion]
+            overall = Counter(all_emotions)
+            lines.append("\nOverall emotion distribution (all time):")
+            for emotion, count in overall.most_common(6):
+                pct = count / len(all_emotions) * 100
+                lines.append(f"  {emotion}: {count} entries ({pct:.1f}%)")
+            return "\n".join(lines)
+        except Exception as e:
+            return f"Error retrieving emotional timeline: {str(e)}"
+
+    def get_journal_statistics() -> str:
+        try:
+            entries = db.query(JournalEntry).filter(
+                JournalEntry.user_id == user_id
+            ).order_by(JournalEntry.created_at.asc()).all()
+
+            if not entries:
+                return "No journal entries found."
+
+            total = len(entries)
+            first_date = entries[0].created_at
+            last_date = entries[-1].created_at
+            avg_len = sum(len(e.content) for e in entries) / total
+            with_emotions = sum(1 for e in entries if e.emotion)
+            with_embeddings = sum(1 for e in entries if e.embedding is not None)
+
+            return (
+                f"Journal Statistics:\n"
+                f"  Total entries: {total}\n"
+                f"  Journaling since: {first_date.strftime('%Y-%m-%d') if first_date else 'unknown'}\n"
+                f"  Most recent entry: {last_date.strftime('%Y-%m-%d') if last_date else 'unknown'}\n"
+                f"  Average entry length: {avg_len:.0f} characters\n"
+                f"  Entries with emotion analysis: {with_emotions}/{total}\n"
+                f"  Entries with semantic index: {with_embeddings}/{total}"
+            )
+        except Exception as e:
+            return f"Error retrieving journal statistics: {str(e)}"
+
+    # ── Pydantic schemas for tool inputs ────────────────────────────────────
+
+    class SearchInput(PydanticBaseModel):
+        query: str = Field(description="Topic, theme, or concept to search for in journal entries")
+        top_k: int = Field(default=8, description="Number of results to return (default 8)")
+
+    class RecentInput(PydanticBaseModel):
+        count: int = Field(default=10, description="How many recent entries to retrieve (default 10)")
+
+    class EmotionInput(PydanticBaseModel):
+        emotion: str = Field(
+            description="Emotion label to filter by (e.g., joy, sadness, anger, fear, neutral, surprise, disgust, approval)"
+        )
+
+    class NoInput(PydanticBaseModel):
+        pass
+
+    # ── Build LangChain tools ────────────────────────────────────────────────
+
+    tools = [
+        StructuredTool.from_function(
+            func=search_journals,
+            name="search_journals",
+            description=(
+                "Semantically search all journal entries for entries related to a specific topic, "
+                "theme, event, or concept. Returns the most relevant entries with dates and emotions. "
+                "Use this frequently to find specific life experiences."
+            ),
+            args_schema=SearchInput,
+        ),
+        StructuredTool.from_function(
+            func=get_recent_entries,
+            name="get_recent_entries",
+            description=(
+                "Get the most recent journal entries to understand what has been happening in the "
+                "user's life lately and their current state of mind."
+            ),
+            args_schema=RecentInput,
+        ),
+        StructuredTool.from_function(
+            func=get_entries_by_emotion,
+            name="get_entries_by_emotion",
+            description=(
+                "Find journal entries filtered by a specific detected emotion. Useful for exploring "
+                "when and why the user felt a particular way. Common emotions: joy, sadness, anger, "
+                "fear, neutral, surprise, disgust, approval, disapproval, gratitude, curiosity."
+            ),
+            args_schema=EmotionInput,
+        ),
+        StructuredTool.from_function(
+            func=get_journal_themes,
+            name="get_journal_themes",
+            description=(
+                "Get the recurring themes and topic clusters automatically identified across all "
+                "journal entries. Use this to understand the major life areas the user writes about."
+            ),
+            args_schema=NoInput,
+        ),
+        StructuredTool.from_function(
+            func=get_emotional_timeline,
+            name="get_emotional_timeline",
+            description=(
+                "Get a timeline showing how the user's emotions have shifted and evolved over time. "
+                "Use this to understand emotional growth, patterns, and trends."
+            ),
+            args_schema=NoInput,
+        ),
+        StructuredTool.from_function(
+            func=get_journal_statistics,
+            name="get_journal_statistics",
+            description=(
+                "Get an overview of the user's journaling habits: total entries, date range, "
+                "average length, and analysis coverage."
+            ),
+            args_schema=NoInput,
+        ),
+    ]
+
+    # ── LLM (LLama 3.3 70B via OpenRouter) ──────────────────────────────────
+
+    llm = ChatOpenAI(
+        model="arcee-ai/trinity-large-preview:free", #"meta-llama/llama-3.3-70b-instruct:free",
+        openai_api_key=openrouter_api_key,
+        openai_api_base="https://openrouter.ai/api/v1",
+        temperature=0.7,
+        max_tokens=2048,
+    )
+
+    # ── LangChain 1.0 agent (create_agent returns a CompiledStateGraph) ────────
+
+    graph = create_agent(
+        model=llm,
+        tools=tools,
+        system_prompt=THERAPY_SYSTEM_PROMPT,
+        debug=False,
+    )
+
+    # Cap graph steps to limit OpenRouter API calls (each model turn = 1 request).
+    # Free tier: 20 RPM, ~50 RPD. recursion_limit 8 ≈ at most 4 LLM rounds per question.
+    result = None
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            result = graph.invoke(
+                {"messages": [HumanMessage(content=question)]},
+                config={
+                    "recursion_limit": 20,
+                    "run_name": "therapy-agent",
+                    "metadata": {
+                        "user_id": user_id,
+                        "question_preview": question[:120],
+                    },
+                    "tags": ["reflectai", "therapy"],
+                },
+            )
+            break
+        except Exception as e:
+            err_str = str(e).lower()
+            is_retryable = "429" in err_str or "503" in err_str or "rate" in err_str
+            if attempt < max_retries - 1 and is_retryable:
+                time.sleep((2 ** attempt) * 2)  # 2, 4, 8 s
+                continue
+            return {
+                "status": "error",
+                "question": question,
+                "message": f"Agent execution failed: {str(e)}",
+            }
+    if result is None:
+        return {"status": "error", "question": question, "message": "Agent execution failed (no result)."}
+
+    # ── Extract final answer and tool steps from message list ────────────────
+
+    messages = result.get("messages", [])
+    final_answer = ""
+    steps = []
+    pending_tool_calls = {}  # tool_call_id -> {tool, tool_input}
+
+    def _message_content(msg) -> str:
+        """Extract string content from a message (handles str or list of content blocks)."""
+        raw = getattr(msg, "content", None)
+        if isinstance(raw, str):
+            return raw
+        if isinstance(raw, list) and raw:
+            part = raw[0]
+            if isinstance(part, dict) and "text" in part:
+                return part["text"]
+            if hasattr(part, "get") and part.get("type") == "text":
+                return part.get("text", "")
+        return ""
+
+    for msg in messages:
+        if isinstance(msg, AIMessage):
+            if getattr(msg, "tool_calls", None):
+                for tc in msg.tool_calls:
+                    tc_id = tc.get("id") if isinstance(tc, dict) else getattr(tc, "id", None)
+                    name = tc.get("name") if isinstance(tc, dict) else getattr(tc, "name", "")
+                    args = tc.get("args") if isinstance(tc, dict) else getattr(tc, "args", {}) or {}
+                    if tc_id:
+                        pending_tool_calls[tc_id] = {"tool": name, "tool_input": args, "observation": None}
+            else:
+                content = _message_content(msg)
+                if content:
+                    final_answer = content
+        elif isinstance(msg, ToolMessage):
+            tc_id = getattr(msg, "tool_call_id", None)
+            if tc_id and tc_id in pending_tool_calls:
+                pending_tool_calls[tc_id]["observation"] = _message_content(msg) or getattr(msg, "content", "")
+                steps.append(pending_tool_calls.pop(tc_id))
+
+    # If we never got an AIMessage without tool_calls, use the last AI content we saw
+    if not final_answer:
+        for msg in reversed(messages):
+            if isinstance(msg, AIMessage):
+                content = _message_content(msg)
+                if content:
+                    final_answer = content
+                    break
+
+    # Serialize steps for the UI (truncate long observations)
+    steps_serialized = []
+    for s in steps:
+        steps_serialized.append({
+            "tool": s["tool"],
+            "tool_input": s["tool_input"] if isinstance(s["tool_input"], dict) else {"input": str(s["tool_input"])},
+            "observation": str(s.get("observation") or "")[:2000],
+        })
+
+    return {
+        "status": "success",
+        "question": question,
+        "answer": final_answer or "I was unable to generate a response.",
+        "steps": steps_serialized,
+    }

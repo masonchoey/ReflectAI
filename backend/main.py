@@ -23,7 +23,8 @@ from schemas import (
     TokenizationResponse, GoogleAuthRequest, AuthResponse, UserResponse,
     ClusteringRunRequest, ClusteringRunResponse, ClusterInfoResponse, ClusterPoint, 
     ClusterVisualizationResponse, ClusterMembership, EntryClusterMembershipsResponse,
-    ClusterEntriesResponse, EntryClusterInfo,
+    ClusterEntriesResponse, EntryClusterInfo, 
+    TherapyQuestionRequest,
     TaskStatusResponse, ClusteringRecommendResponse, RecommendedClusterParams,
     BulkAnalyzeResponse, BulkAnalyzeRequest
 )
@@ -35,6 +36,7 @@ from tasks import (
     analyze_emotion_task,
     tokenize_entry_task,
     semantic_search_task,
+    therapy_question_task,
 )
 from celery.result import AsyncResult
 from celery_app import celery_app
@@ -1244,6 +1246,32 @@ def get_cluster_entries(
         cluster_name=cluster_name,
         entries=entries_list
     )
+
+
+# ============== Therapy Question Endpoints ==============
+
+@app.post("/therapy/ask", response_model=TaskStatusResponse)
+def ask_therapy_question(
+    request: TherapyQuestionRequest,
+    current_user: User = Depends(require_auth),
+):
+    """
+    Queue a therapy-style question to be answered by a LangChain agent
+    (LLama 3.3 70B via OpenRouter) that searches the user's journal entries.
+
+    Poll GET /tasks/{task_id} for the result. On SUCCESS the result contains:
+      question, answer, steps (list of tool calls with observations).
+    """
+    if not request.question.strip():
+        raise HTTPException(status_code=400, detail="Question cannot be empty")
+
+    task = therapy_question_task.delay(
+        user_id=current_user.id,
+        question=request.question.strip(),
+    )
+    ensure_worker_running()
+
+    return TaskStatusResponse(task_id=task.id, status=task.state, result=None)
 
 
 # ============== Task Status Endpoints ==============
