@@ -220,6 +220,56 @@ class TaskStatusResponse(BaseModel):
 # Therapy question schemas
 class TherapyQuestionRequest(BaseModel):
     question: str
+    conversation_id: Optional[int] = None
+
+# Conversation schemas
+class ConversationMessageResponse(BaseModel):
+    id: int
+    conversation_id: int
+    role: str
+    content: str
+    steps: Optional[List[dict]] = None
+    is_error: bool
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class ConversationResponse(BaseModel):
+    id: int
+    user_id: int
+    title: Optional[str] = None
+    created_at: datetime
+    updated_at: datetime
+    messages: List[ConversationMessageResponse] = []
+
+    class Config:
+        from_attributes = True
+
+
+class ConversationListItem(BaseModel):
+    id: int
+    title: Optional[str] = None
+    created_at: datetime
+    updated_at: datetime
+    message_count: int = 0
+
+    class Config:
+        from_attributes = True
+
+
+class SaveMessageRequest(BaseModel):
+    conversation_id: Optional[int] = None
+    role: str
+    content: str
+    steps: Optional[List[dict]] = None
+    is_error: bool = False
+
+
+class SaveMessageResponse(BaseModel):
+    conversation_id: int
+    message_id: int
       
 # Admin schemas
 class BulkAnalyzeRequest(BaseModel):

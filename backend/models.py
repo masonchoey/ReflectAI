@@ -101,3 +101,34 @@ class EntryClusterAssignment(Base):
         Index('idx_entry_run', 'entry_id', 'run_id'),
         Index('idx_cluster_run', 'cluster_id', 'run_id'),
     )
+
+
+class Conversation(Base):
+    """A named conversation session between the user and the AI assistant."""
+    __tablename__ = "conversations"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    title = Column(String(300), nullable=True)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+
+    # Relationships
+    user = relationship("User")
+    messages = relationship("ConversationMessage", back_populates="conversation", cascade="all, delete-orphan", order_by="ConversationMessage.created_at")
+
+
+class ConversationMessage(Base):
+    """A single message (user or assistant) within a conversation."""
+    __tablename__ = "conversation_messages"
+
+    id = Column(Integer, primary_key=True, index=True)
+    conversation_id = Column(Integer, ForeignKey("conversations.id", ondelete="CASCADE"), nullable=False, index=True)
+    role = Column(String(20), nullable=False)  # 'user' or 'assistant'
+    content = Column(Text, nullable=False)
+    steps = Column(JSON, nullable=True)  # Tool-call steps for assistant messages [{tool, tool_input, observation}]
+    is_error = Column(Boolean, nullable=False, default=False)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+    # Relationships
+    conversation = relationship("Conversation", back_populates="messages")

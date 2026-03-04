@@ -15,7 +15,7 @@ from env import load_root_env
 
 from database import engine, get_db, Base
 from database import enable_pgvector_extension
-from models import JournalEntry, User, ClusteringRun, Cluster, EntryClusterAssignment
+from models import JournalEntry, User, ClusteringRun, Cluster, EntryClusterAssignment, Conversation, ConversationMessage
 from schemas import (
     JournalEntryCreate, JournalEntryUpdate, JournalEntryResponse,
     EmbeddingResponse,
@@ -26,7 +26,9 @@ from schemas import (
     ClusterEntriesResponse, EntryClusterInfo, 
     TherapyQuestionRequest,
     TaskStatusResponse, ClusteringRecommendResponse, RecommendedClusterParams,
-    BulkAnalyzeResponse, BulkAnalyzeRequest
+    BulkAnalyzeResponse, BulkAnalyzeRequest,
+    ConversationResponse, ConversationListItem, SaveMessageRequest, SaveMessageResponse,
+    ConversationMessageResponse,
 )
 from sqlalchemy import text, func
 from tasks import (
@@ -1272,6 +1274,114 @@ def ask_therapy_question(
     ensure_worker_running()
 
     return TaskStatusResponse(task_id=task.id, status=task.state, result=None)
+
+
+# ============== Conversation Endpoints ==============
+
+@app.get("/conversations", response_model=List[ConversationListItem])
+def list_conversations(
+    current_user: User = Depends(require_auth),
+    db: Session = Depends(get_db),
+):
+    """List all conversations for the current user, newest first."""
+    conversations = (
+        db.query(Conversation)
+        .filter(Conversation.user_id == current_user.id)
+        .order_by(Conversation.updated_at.desc())
+        .all()
+    )
+    result = []
+    for conv in conversations:
+        count = db.query(func.count(ConversationMessage.id)).filter(
+            ConversationMessage.conversation_id == conv.id
+        ).scalar()
+        result.append(ConversationListItem(
+            id=conv.id,
+            title=conv.title,
+            created_at=conv.created_at,
+            updated_at=conv.updated_at,
+            message_count=count or 0,
+        ))
+    return result
+
+
+@app.get("/conversations/{conversation_id}", response_model=ConversationResponse)
+def get_conversation(
+    conversation_id: int,
+    current_user: User = Depends(require_auth),
+    db: Session = Depends(get_db),
+):
+    """Get a conversation with all its messages."""
+    conv = db.query(Conversation).filter(
+        Conversation.id == conversation_id,
+        Conversation.user_id == current_user.id,
+    ).first()
+    if not conv:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    return conv
+
+
+@app.post("/conversations/messages", response_model=SaveMessageResponse)
+def save_message(
+    request: SaveMessageRequest,
+    current_user: User = Depends(require_auth),
+    db: Session = Depends(get_db),
+):
+    """
+    Append a message to a conversation. If conversation_id is None, a new
+    conversation is created automatically. The conversation title is derived
+    from the first user message (truncated to 80 chars).
+    """
+    if request.conversation_id:
+        conv = db.query(Conversation).filter(
+            Conversation.id == request.conversation_id,
+            Conversation.user_id == current_user.id,
+        ).first()
+        if not conv:
+            raise HTTPException(status_code=404, detail="Conversation not found")
+    else:
+        title = None
+        if request.role == "user":
+            title = request.content[:80] + ("…" if len(request.content) > 80 else "")
+        conv = Conversation(user_id=current_user.id, title=title)
+        db.add(conv)
+        db.flush()
+
+    msg = ConversationMessage(
+        conversation_id=conv.id,
+        role=request.role,
+        content=request.content,
+        steps=request.steps,
+        is_error=request.is_error,
+    )
+    db.add(msg)
+
+    # Update conversation timestamp and set title from first user message if not yet set
+    conv.updated_at = datetime.now(timezone.utc)
+    if conv.title is None and request.role == "user":
+        conv.title = request.content[:80] + ("…" if len(request.content) > 80 else "")
+
+    db.commit()
+    db.refresh(msg)
+    return SaveMessageResponse(conversation_id=conv.id, message_id=msg.id)
+
+
+@app.delete("/conversations/{conversation_id}", status_code=204)
+def delete_conversation(
+    conversation_id: int,
+    current_user: User = Depends(require_auth),
+    db: Session = Depends(get_db),
+):
+    """Delete a conversation and all its messages."""
+    conv = db.query(Conversation).filter(
+        Conversation.id == conversation_id,
+        Conversation.user_id == current_user.id,
+    ).first()
+    if not conv:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    db.delete(conv)
+    db.commit()
+    return Response(status_code=204)
 
 
 # ============== Task Status Endpoints ==============
