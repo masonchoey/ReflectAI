@@ -226,7 +226,8 @@ def run_clustering_task(
     cluster_selection_epsilon: Optional[float] = None,
     umap_n_components: Optional[int] = None,
     umap_n_neighbors: Optional[int] = None,
-    umap_min_dist: Optional[float] = None
+    umap_min_dist: Optional[float] = None,
+    demo_session_id: Optional[str] = None,
 ):
     """
     Run HDBSCAN clustering on a user's journal entries asynchronously.
@@ -242,6 +243,7 @@ def run_clustering_task(
         umap_n_components: Optional UMAP n_components parameter
         umap_n_neighbors: Optional UMAP n_neighbors parameter
         umap_min_dist: Optional UMAP min_dist parameter
+        demo_session_id: If set, results are stored in Redis only (no DB persistence)
         
     Returns:
         dict: Result containing status, run_id, and clustering statistics
@@ -252,6 +254,7 @@ def run_clustering_task(
     print("="*60)
     print(f"User ID: {user_id}")
     print(f"Date range: {start_date} to {end_date}")
+    print(f"Demo session: {demo_session_id}")
     print(f"Clustering parameters:")
     print(f"  min_cluster_size: {min_cluster_size}")
     print(f"  min_samples: {min_samples}")
@@ -264,6 +267,7 @@ def run_clustering_task(
     print("="*60 + "\n")
 
     try:
+        import json
         # Ensure backend dir is on path so lazy import works (worker may run from project root or /app)
         import sys
         _backend_dir = os.path.dirname(os.path.abspath(__file__))
@@ -297,7 +301,7 @@ def run_clustering_task(
         
         # Get the most recent run for this user
         db = self.db
-        from models import ClusteringRun
+        from models import ClusteringRun, Cluster, EntryClusterAssignment, JournalEntry
         latest_run = db.query(ClusteringRun).filter(
             ClusteringRun.user_id == user_id
         ).order_by(ClusteringRun.run_timestamp.desc()).first()
@@ -307,6 +311,153 @@ def run_clustering_task(
                 "status": "error",
                 "user_id": user_id,
                 "message": "Clustering completed but no run was found"
+            }
+
+        if demo_session_id:
+            # Build the full visualization JSON, store in Redis, then clean up the DB records
+            from celery_app import REDIS_URL
+            import redis as redis_lib
+
+            run_id = latest_run.id
+
+            # Fetch all the data needed to reconstruct the visualization response
+            assignments = db.query(EntryClusterAssignment).filter(
+                EntryClusterAssignment.run_id == run_id
+            ).all()
+            clusters_db = db.query(Cluster).filter(Cluster.run_id == run_id).all()
+
+            entry_to_cluster: dict = {}
+            entry_to_all_memberships: dict = {}
+            for assignment in assignments:
+                entry_to_all_memberships.setdefault(assignment.entry_id, []).append(assignment)
+                if assignment.is_primary or assignment.entry_id not in entry_to_cluster:
+                    entry_to_cluster[assignment.entry_id] = {
+                        "cluster_id": assignment.cluster_id,
+                        "probability": assignment.membership_probability,
+                    }
+
+            assigned_entry_ids = set(entry_to_cluster.keys())
+
+            cluster_info_map = {}
+            for cluster in clusters_db:
+                cluster_info_map[cluster.cluster_id] = {
+                    "name": cluster.topic_label or f"Cluster {cluster.cluster_id}",
+                    "size": cluster.size,
+                    "persistence": cluster.persistence,
+                    "topic_label": cluster.topic_label,
+                    "summary": cluster.summary,
+                }
+
+            slim_entries = (
+                db.query(JournalEntry)
+                .filter(
+                    JournalEntry.user_id == user_id,
+                    JournalEntry.id.in_(assigned_entry_ids),
+                )
+                .all()
+            )
+
+            umap_coords = {e.id: (e.umap_x, e.umap_y) for e in slim_entries
+                          if e.umap_x is not None and e.umap_y is not None}
+
+            points = []
+            for entry in slim_entries:
+                if entry.id not in umap_coords:
+                    continue
+                assignment = entry_to_cluster[entry.id]
+                cluster_id = assignment["cluster_id"]
+                cluster_name = (
+                    "Noise" if cluster_id == -1
+                    else cluster_info_map.get(cluster_id, {}).get("name", f"Cluster {cluster_id}")
+                )
+                all_memberships = []
+                for m in sorted(
+                    entry_to_all_memberships.get(entry.id, []),
+                    key=lambda x: x.membership_probability,
+                    reverse=True,
+                ):
+                    mem_name = (
+                        "Noise" if m.cluster_id == -1
+                        else cluster_info_map.get(m.cluster_id, {}).get("name", f"Cluster {m.cluster_id}")
+                    )
+                    all_memberships.append({
+                        "cluster_id": m.cluster_id,
+                        "cluster_name": mem_name,
+                        "membership_probability": m.membership_probability,
+                        "is_primary": m.is_primary,
+                    })
+                x, y = umap_coords[entry.id]
+                points.append({
+                    "entry_id": entry.id,
+                    "title": entry.title,
+                    "x": x,
+                    "y": y,
+                    "cluster_id": cluster_id,
+                    "cluster_name": cluster_name,
+                    "membership_probability": assignment["probability"],
+                    "all_memberships": all_memberships,
+                })
+
+            clusters_list = [
+                {
+                    "cluster_id": c.cluster_id,
+                    "size": c.size,
+                    "persistence": c.persistence,
+                    "topic_label": c.topic_label,
+                    "summary": c.summary,
+                }
+                for c in clusters_db
+            ]
+
+            viz_data = {"points": points, "clusters": clusters_list}
+
+            # Store in Redis under a negative run ID to distinguish from real DB runs
+            DEMO_SESSION_TTL = 7 * 24 * 3600
+            if REDIS_URL.startswith("rediss://"):
+                r = redis_lib.from_url(REDIS_URL, decode_responses=True, ssl_cert_reqs=None)
+            else:
+                r = redis_lib.from_url(REDIS_URL, decode_responses=True)
+
+            counter_key = f"demo:{demo_session_id}:run_counter"
+            demo_run_id = -int(r.incr(counter_key))  # -1, -2, -3 ...
+            r.expire(counter_key, DEMO_SESSION_TTL)
+
+            r.setex(
+                f"demo:{demo_session_id}:run:{demo_run_id}",
+                DEMO_SESSION_TTL,
+                json.dumps(viz_data),
+            )
+
+            run_meta = {
+                "id": demo_run_id,
+                "run_timestamp": latest_run.run_timestamp.isoformat(),
+                "num_entries": latest_run.num_entries,
+                "num_clusters": latest_run.num_clusters,
+                "min_cluster_size": latest_run.min_cluster_size,
+                "min_samples": latest_run.min_samples,
+                "membership_threshold": latest_run.membership_threshold,
+                "noise_entries": latest_run.noise_entries,
+                "start_date": latest_run.start_date.isoformat() if latest_run.start_date else None,
+                "end_date": latest_run.end_date.isoformat() if latest_run.end_date else None,
+            }
+            runs_key = f"demo:{demo_session_id}:runs"
+            existing_runs = json.loads(r.get(runs_key) or "[]")
+            existing_runs.insert(0, run_meta)
+            r.setex(runs_key, DEMO_SESSION_TTL, json.dumps(existing_runs))
+
+            # Clean up the temporary DB records (cascade deletes Cluster + EntryClusterAssignment)
+            db.delete(latest_run)
+            db.commit()
+
+            return {
+                "status": "success",
+                "user_id": user_id,
+                "run_id": demo_run_id,
+                "num_entries": run_meta["num_entries"],
+                "num_clusters": run_meta["num_clusters"],
+                "noise_entries": run_meta["noise_entries"],
+                "start_date": run_meta["start_date"],
+                "end_date": run_meta["end_date"],
             }
         
         return {
@@ -379,6 +530,63 @@ def analyze_emotion_task(self, entry_id: int):
     except Exception as e:
         if db is not None:
             db.rollback()
+        return {
+            "status": "error",
+            "entry_id": entry_id,
+            "message": f"Error analyzing emotion: {str(e)}",
+        }
+
+
+@celery_app.task(name="tasks.analyze_demo_entry")
+def analyze_demo_entry_task(demo_session_id: str, entry_id: int, content: str):
+    """
+    Analyze emotions for a demo entry (stored in Redis, not the DB).
+
+    Runs the same emotion classifier as analyze_emotion_task but writes the result
+    back to the Redis demo session instead of Postgres.
+
+    Returns the same shape as analyze_emotion_task so the frontend can handle it
+    identically.
+    """
+    import json
+    from celery_app import REDIS_URL
+    import redis as redis_lib
+
+    DEMO_SESSION_TTL = 7 * 24 * 3600
+
+    try:
+        classifier = get_emotion_classifier()
+
+        text = content[:512]
+        results = classifier(text)[0]
+        sorted_results = sorted(results, key=lambda x: x["score"], reverse=True)
+        top_emotion = sorted_results[0]
+        all_emotions = [{"label": r["label"], "score": r["score"]} for r in sorted_results]
+
+        # Write emotion result back into the Redis entry
+        if REDIS_URL.startswith("rediss://"):
+            r = redis_lib.from_url(REDIS_URL, decode_responses=True, ssl_cert_reqs=None)
+        else:
+            r = redis_lib.from_url(REDIS_URL, decode_responses=True)
+
+        entries_key = f"demo:{demo_session_id}:entries"
+        session_entries = json.loads(r.get(entries_key) or "[]")
+        for e in session_entries:
+            if e["id"] == entry_id:
+                e["emotion"] = top_emotion["label"]
+                e["emotion_score"] = top_emotion["score"]
+                e["all_emotions"] = all_emotions
+                break
+        r.setex(entries_key, DEMO_SESSION_TTL, json.dumps(session_entries))
+
+        return {
+            "status": "success",
+            "entry_id": entry_id,
+            "emotion": top_emotion["label"],
+            "emotion_score": top_emotion["score"],
+            "all_emotions": all_emotions,
+        }
+    except Exception as e:
         return {
             "status": "error",
             "entry_id": entry_id,

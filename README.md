@@ -197,6 +197,23 @@ If you run the frontend on localhost (e.g. `npm run dev` on port 5173) but don't
 - `POST /entries/embed-all` - Generate embeddings for all entries
 - `POST /search/semantic` - Semantic search across entries
 
+## Demo Data Seeding
+
+To populate the demo with one clustering run and one therapy question conversation (so all demo users see them):
+
+1. Ensure the demo user exists (e.g. from your seed SQL) and has journal entries with embeddings.
+2. Generate embeddings for the demo user if needed:
+   ```bash
+   cd backend && python generate_embeddings.py --user-id <demo_user_id>
+   ```
+3. Run the demo seed script:
+   ```bash
+   cd backend && python seed_demo_data.py
+   ```
+   Or with Docker: `docker compose exec backend python seed_demo_data.py`
+
+This creates one clustering run (using suggested parameters for ~100 entries) and one sample LangChain therapy Q&A in the database. Demo users will see these when they click "Try the Demo".
+
 ## Database Schema
 
 ### Users Table

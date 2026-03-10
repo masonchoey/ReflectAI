@@ -15,6 +15,7 @@ class UserResponse(BaseModel):
     name: Optional[str] = None
     picture: Optional[str] = None
     created_at: datetime
+    is_demo: bool = False
 
     class Config:
         from_attributes = True
