@@ -176,6 +176,8 @@ If you run the frontend on localhost (e.g. `npm run dev` on port 5173) but don't
 | `HF_HOME` | Hugging Face cache directory (defaults to `~/.cache/huggingface`) | No |
 | `VITE_API_URL` | Backend API URL for the frontend | No (defaults to `http://localhost:8000`) |
 | `VITE_GOOGLE_CLIENT_ID` | Google OAuth2 Client ID (for frontend) | Yes |
+| `VITE_SUPABASE_URL` | Supabase project URL (for deployed Supabase auth, optional) | No |
+| `VITE_SUPABASE_ANON_KEY` | Supabase anon key (for deployed Supabase auth, optional) | No |
 
 ## API Endpoints
 

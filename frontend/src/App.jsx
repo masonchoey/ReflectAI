@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
+import { createClient } from '@supabase/supabase-js'
 
 // Prefer Vite env; fall back based on environment
 // In production (Fly), use the Fly API URL; in development, use localhost
@@ -10,6 +11,16 @@ const API_URL = import.meta.env.VITE_API_URL || (
     : 'https://reflectai-api-icy-dust-4243.fly.dev'
 )
 const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID || ''
+
+const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL || ''
+const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY || ''
+const IS_LOCALHOST =
+  window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
+const SHOULD_USE_SUPABASE = !IS_LOCALHOST && !!SUPABASE_URL && !!SUPABASE_ANON_KEY
+
+const supabase = SHOULD_USE_SUPABASE
+  ? createClient(SUPABASE_URL, SUPABASE_ANON_KEY)
+  : null
 
 const CLUSTER_PARAMS_STORAGE_KEY = 'reflectai_cluster_params'
 
@@ -263,6 +274,17 @@ function App() {
       setToken(data.access_token)
       setUser(data.user)
       setError(null)
+
+      if (SHOULD_USE_SUPABASE && supabase) {
+        try {
+          await supabase.auth.signInWithIdToken({
+            provider: 'google',
+            token: response.credential
+          })
+        } catch (supabaseError) {
+          console.error('Supabase sign-in with Google ID token failed:', supabaseError)
+        }
+      }
     } catch (err) {
       setError('Sign in failed. Please try again.')
       console.error('Auth error:', err)
