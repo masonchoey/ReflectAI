@@ -13,22 +13,17 @@ DATABASE_URL = os.getenv(
     "postgresql://postgres:postgres@localhost:5432/reflectai"
 )
 
-# Create engine with connection pool settings for better reliability
-engine = create_engine(
-    DATABASE_URL,
-    pool_pre_ping=True,  # Verify connections before using them
-    pool_recycle=3600,  # Recycle connections after 1 hour
-    pool_size=10,  # Number of connections to maintain
-    max_overflow=20,  # Maximum number of connections beyond pool_size
-    connect_args={
+
+def _build_connect_args(database_url: str) -> dict:
+    """
+    Build connect_args for SQLAlchemy.
+
+    Some managed Postgres frontends (including Supabase's direct DB endpoint)
+    reject the `options` startup parameter with "unsupported startup parameter: options".
+    When connecting to those hosts, we omit the `options` field.
+    """
+    base_args = {
         "connect_timeout": 10,       # Initial TCP connection timeout (seconds)
-        # statement_timeout:              kills a query that runs longer than 30 s
-        # idle_in_transaction_session_timeout: kills a connection that sits "idle in
-        #   transaction" (open txn, no active query) for longer than 60 s.  This is
-        #   the DB-side safety net for the scenario where Python code holds a session
-        #   open between queries (e.g. during CPU-bound work) and never commits or
-        #   rolls back, causing connections to pile up in pg_stat_activity.
-        "options": "-c statement_timeout=30000 -c idle_in_transaction_session_timeout=60000",
         # TCP keepalives detect dead connections in ~80s (30s idle + 10s * 5 probes)
         # without this, a dropped connection can hang for hours
         "keepalives": 1,
@@ -36,6 +31,28 @@ engine = create_engine(
         "keepalives_interval": 10,
         "keepalives_count": 5,
     }
+
+    # If we're talking to Supabase's direct DB host, avoid sending `options`
+    # because their router may reject it. For other hosts (local dev, plain Postgres)
+    # we keep statement/idle timeouts via options.
+    if "supabase.co" in database_url:
+        return base_args
+
+    base_args["options"] = (
+        "-c statement_timeout=30000 "
+        "-c idle_in_transaction_session_timeout=60000"
+    )
+    return base_args
+
+
+# Create engine with connection pool settings for better reliability
+engine = create_engine(
+    DATABASE_URL,
+    pool_pre_ping=True,  # Verify connections before using them
+    pool_recycle=3600,  # Recycle connections after 1 hour
+    pool_size=10,  # Number of connections to maintain
+    max_overflow=20,  # Maximum number of connections beyond pool_size
+    connect_args=_build_connect_args(DATABASE_URL),
 )
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
