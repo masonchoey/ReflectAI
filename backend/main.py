@@ -190,9 +190,9 @@ def get_current_user(
     """Get the current authenticated user from JWT token."""
     if credentials is None:
         return None
-
+    
     token = credentials.credentials
-
+    
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         user_id: int = payload.get("user_id")
@@ -200,8 +200,7 @@ def get_current_user(
             return None
     except JWTError:
         return None
-
-    db.execute(text("SELECT set_config('app.current_user_id', :uid, true)"), {"uid": str(user_id)})
+    
     user = db.query(User).filter(User.id == user_id).first()
     return user
 
@@ -212,7 +211,7 @@ def require_auth(
 ) -> User:
     """Require authentication - raises 401 if not authenticated."""
     token = credentials.credentials
-
+    
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         user_id: int = payload.get("user_id")
@@ -226,15 +225,14 @@ def require_auth(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid authentication token"
         )
-
-    db.execute(text("SELECT set_config('app.current_user_id', :uid, true)"), {"uid": str(user_id)})
+    
     user = db.query(User).filter(User.id == user_id).first()
     if user is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="User not found"
         )
-
+    
     return user
 
 
@@ -275,13 +273,12 @@ def google_auth(auth_request: GoogleAuthRequest, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.google_id == google_user['google_id']).first()
     
     if user:
-        # Set session variable before UPDATE so the RLS policy allows it
-        db.execute(text("SELECT set_config('app.current_user_id', :uid, true)"), {"uid": str(user.id)})
+        # Update last login and info
         user.last_login = datetime.now(timezone.utc)
         user.name = google_user.get('name')
         user.picture = google_user.get('picture')
     else:
-        # INSERT is covered by an unrestricted INSERT policy — no session var needed
+        # Create new user
         user = User(
             google_id=google_user['google_id'],
             email=google_user['email'],
