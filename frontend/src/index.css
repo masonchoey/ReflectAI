@@ -301,6 +301,180 @@ header .admin-panel {
   font-size: 0.85rem;
 }
 
+/* Auth page divider */
+.auth-divider {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  margin: 1.25rem 0 1rem;
+  color: var(--text-tertiary);
+  font-size: 0.85rem;
+}
+
+.auth-divider::before,
+.auth-divider::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--border-color);
+}
+
+/* Try Demo button - clear button style (not link-like) */
+.try-demo-button {
+  appearance: none;
+  width: 100%;
+  padding: 0.75rem 1.5rem;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1.5px solid var(--accent-primary);
+  border-radius: 100px;
+  color: var(--accent-primary);
+  font-size: 0.95rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.18s, color 0.18s, border-color 0.18s, transform 0.1s;
+  letter-spacing: 0.01em;
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+}
+
+.try-demo-button:hover:not(:disabled) {
+  background: var(--accent-primary);
+  color: #fff;
+  transform: translateY(-1px);
+}
+
+.try-demo-button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.demo-note {
+  margin-top: 0.75rem;
+  font-size: 0.8rem;
+  color: var(--text-tertiary);
+  line-height: 1.5;
+}
+
+/* Demo banner */
+.demo-banner {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.75rem 1.5rem;
+  background: rgba(240, 173, 78, 0.12);
+  border-bottom: 1px solid rgba(240, 173, 78, 0.35);
+  font-size: 0.88rem;
+  color: var(--text-primary);
+}
+
+.demo-banner-icon {
+  font-size: 1.1rem;
+  flex-shrink: 0;
+}
+
+.demo-banner span:nth-child(2) {
+  flex: 1;
+  line-height: 1.45;
+}
+
+.demo-banner-cta {
+  flex-shrink: 0;
+  padding: 0.35rem 0.9rem;
+  background: transparent;
+  border: 1px solid rgba(240, 173, 78, 0.6);
+  border-radius: 100px;
+  color: #c98a1a;
+  font-size: 0.8rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+  white-space: nowrap;
+}
+
+.demo-banner-cta:hover {
+  background: rgba(240, 173, 78, 0.18);
+  color: #a87215;
+}
+
+/* Clustering complete notification banner */
+.clustering-complete-banner {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.65rem 1.5rem;
+  background: rgba(40, 167, 69, 0.12);
+  border-bottom: 1px solid rgba(40, 167, 69, 0.35);
+  font-size: 0.88rem;
+  color: var(--text-primary);
+}
+
+.clustering-complete-banner span {
+  flex: 1;
+}
+
+.clustering-complete-view-btn {
+  flex-shrink: 0;
+  padding: 0.3rem 0.8rem;
+  background: transparent;
+  border: 1px solid rgba(40, 167, 69, 0.6);
+  border-radius: 100px;
+  color: #1e7e34;
+  font-size: 0.8rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+  white-space: nowrap;
+}
+
+.clustering-complete-view-btn:hover {
+  background: rgba(40, 167, 69, 0.15);
+}
+
+.clustering-complete-dismiss-btn {
+  flex-shrink: 0;
+  background: transparent;
+  border: none;
+  color: var(--text-secondary);
+  font-size: 0.9rem;
+  cursor: pointer;
+  padding: 0.2rem 0.4rem;
+  line-height: 1;
+}
+
+.clustering-complete-dismiss-btn:hover {
+  color: var(--text-primary);
+}
+
+/* Demo badge in header */
+.demo-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.2rem 0.55rem;
+  background: rgba(240, 173, 78, 0.2);
+  border: 1px solid rgba(240, 173, 78, 0.5);
+  border-radius: 4px;
+  font-size: 0.7rem;
+  font-weight: 700;
+  color: #c98a1a;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+/* Demo form note */
+.demo-form-note {
+  margin-bottom: 1rem;
+  padding: 0.65rem 0.9rem;
+  background: rgba(240, 173, 78, 0.1);
+  border: 1px solid rgba(240, 173, 78, 0.3);
+  border-radius: 8px;
+  font-size: 0.82rem;
+  color: #b07d14;
+  line-height: 1.45;
+}
+
 /* Entries Layout */
 .entries-layout {
   display: flex;

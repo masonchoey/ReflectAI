@@ -1,5 +1,7 @@
 import os
 import math
+import json
+import uuid
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Depends, HTTPException, status, Response, Body
 from fastapi.middleware.cors import CORSMiddleware
@@ -11,6 +13,7 @@ import numpy as np
 from google.oauth2 import id_token
 from google.auth.transport import requests as google_requests
 from jose import JWTError, jwt
+import redis as redis_lib
 from env import load_root_env
 
 from database import engine, get_db, Base
@@ -36,12 +39,13 @@ from tasks import (
     vectorize_all_entries,
     run_clustering_task,
     analyze_emotion_task,
+    analyze_demo_entry_task,
     tokenize_entry_task,
     semantic_search_task,
     therapy_question_task,
 )
 from celery.result import AsyncResult
-from celery_app import celery_app
+from celery_app import celery_app, REDIS_URL
 from fly_worker import ensure_worker_running
 
 load_root_env()
@@ -53,6 +57,25 @@ ACCESS_TOKEN_EXPIRE_DAYS = 7
 
 # Google OAuth Configuration
 GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "")
+
+# Demo mode configuration
+DEMO_USER_GOOGLE_ID = "demo_google_id_001"
+DEMO_USER_EMAIL = "demo@reflectai.app"
+DEMO_SESSION_TTL = 7 * 24 * 3600  # 7 days in seconds
+
+# Redis client for demo session storage (separate from Celery broker)
+def _create_redis_client() -> redis_lib.Redis:
+    if REDIS_URL.startswith("rediss://"):
+        return redis_lib.from_url(REDIS_URL, decode_responses=True, ssl_cert_reqs=None)
+    return redis_lib.from_url(REDIS_URL, decode_responses=True)
+
+_redis_client: Optional[redis_lib.Redis] = None
+
+def get_redis() -> redis_lib.Redis:
+    global _redis_client
+    if _redis_client is None:
+        _redis_client = _create_redis_client()
+    return _redis_client
 
 # Note: Database tables are created in the lifespan startup function
 # to ensure the database is ready before attempting to create tables
@@ -238,6 +261,21 @@ def require_auth(
     return user
 
 
+def get_demo_session_id(
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security)
+) -> Optional[str]:
+    """Extract demo_session_id from the JWT if this is a demo session. Returns None otherwise."""
+    if credentials is None:
+        return None
+    try:
+        payload = jwt.decode(credentials.credentials, SECRET_KEY, algorithms=[ALGORITHM])
+        if payload.get("is_demo"):
+            return payload.get("demo_session_id")
+    except JWTError:
+        pass
+    return None
+
+
 # ============== Helper Functions ==============
 
 def entry_to_response(entry: JournalEntry) -> JournalEntryResponse:
@@ -309,8 +347,53 @@ def google_auth(auth_request: GoogleAuthRequest, db: Session = Depends(get_db)):
     )
 
 
+@app.post("/auth/demo", response_model=AuthResponse)
+def demo_auth(db: Session = Depends(get_db)):
+    """Start a demo session. Returns a JWT for the shared demo user with a unique session ID."""
+    demo_user = db.query(User).filter(User.google_id == DEMO_USER_GOOGLE_ID).first()
+    if demo_user is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Demo mode is not available yet. Please seed the database first."
+        )
+
+    # Backfill created_at if the seed SQL left it NULL (column default may not have fired)
+    if demo_user.created_at is None:
+        demo_user.created_at = datetime.now(timezone.utc)
+        db.commit()
+        db.refresh(demo_user)
+
+    demo_session_id = str(uuid.uuid4())
+
+    # Mark session as active in Redis so we know it's valid
+    r = get_redis()
+    r.setex(f"demo:{demo_session_id}:init", DEMO_SESSION_TTL, "1")
+
+    access_token = create_access_token({
+        "user_id": demo_user.id,
+        "is_demo": True,
+        "demo_session_id": demo_session_id,
+    })
+
+    return AuthResponse(
+        access_token=access_token,
+        user=UserResponse(
+            id=demo_user.id,
+            google_id=demo_user.google_id,
+            email=demo_user.email,
+            name=demo_user.name or "Demo User",
+            picture=demo_user.picture,
+            created_at=demo_user.created_at,
+            is_demo=True,
+        )
+    )
+
+
 @app.get("/auth/me", response_model=UserResponse)
-def get_current_user_info(current_user: User = Depends(require_auth)):
+def get_current_user_info(
+    current_user: User = Depends(require_auth),
+    demo_session_id: Optional[str] = Depends(get_demo_session_id),
+):
     """Get the current authenticated user's information."""
     return UserResponse(
         id=current_user.id,
@@ -318,7 +401,8 @@ def get_current_user_info(current_user: User = Depends(require_auth)):
         email=current_user.email,
         name=current_user.name,
         picture=current_user.picture,
-        created_at=current_user.created_at
+        created_at=current_user.created_at,
+        is_demo=demo_session_id is not None,
     )
 
 
@@ -344,9 +428,35 @@ def get_status():
 def create_entry(
     entry: JournalEntryCreate,
     current_user: User = Depends(require_auth),
+    demo_session_id: Optional[str] = Depends(get_demo_session_id),
     db: Session = Depends(get_db)
 ):
     """Create a new journal entry for the authenticated user."""
+    if demo_session_id:
+        # Demo mode: store entry in Redis only, never touch the DB
+        r = get_redis()
+        counter_key = f"demo:{demo_session_id}:entry_counter"
+        new_id = -int(r.incr(counter_key))  # -1, -2, -3 ...
+        now = datetime.now(timezone.utc).isoformat()
+        demo_entry = {
+            "id": new_id,
+            "user_id": current_user.id,
+            "title": entry.title,
+            "content": entry.content,
+            "created_at": now,
+            "edited_at": None,
+            "emotion": None,
+            "emotion_score": None,
+            "all_emotions": None,
+            "has_embedding": False,
+        }
+        entries_key = f"demo:{demo_session_id}:entries"
+        existing = json.loads(r.get(entries_key) or "[]")
+        existing.insert(0, demo_entry)
+        r.setex(entries_key, DEMO_SESSION_TTL, json.dumps(existing))
+        r.expire(f"demo:{demo_session_id}:entry_counter", DEMO_SESSION_TTL)
+        return JournalEntryResponse(**demo_entry)
+
     db_entry = JournalEntry(
         title=entry.title,
         content=entry.content,
@@ -371,6 +481,7 @@ def create_entry(
 @app.get("/entries", response_model=List[JournalEntryResponse])
 def get_entries(
     current_user: User = Depends(require_auth),
+    demo_session_id: Optional[str] = Depends(get_demo_session_id),
     db: Session = Depends(get_db)
 ):
     """Get all journal entries for the authenticated user."""
@@ -388,7 +499,8 @@ def get_entries(
     ).filter(
         JournalEntry.user_id == current_user.id
     ).order_by(JournalEntry.created_at.desc()).all()
-    return [
+
+    db_entries = [
         JournalEntryResponse(
             id=r.id,
             user_id=r.user_id,
@@ -404,14 +516,36 @@ def get_entries(
         for r in rows
     ]
 
+    if demo_session_id:
+        # Merge Redis-only session entries (new entries added during this demo session)
+        r = get_redis()
+        session_entries_raw = r.get(f"demo:{demo_session_id}:entries")
+        session_entries = []
+        if session_entries_raw:
+            for e in json.loads(session_entries_raw):
+                session_entries.append(JournalEntryResponse(**e))
+        # Session entries go first (newest), then DB entries
+        return session_entries + db_entries
+
+    return db_entries
+
 
 @app.get("/entries/{entry_id}", response_model=JournalEntryResponse)
 def get_entry(
     entry_id: int,
     current_user: User = Depends(require_auth),
+    demo_session_id: Optional[str] = Depends(get_demo_session_id),
     db: Session = Depends(get_db)
 ):
     """Get a specific journal entry (must belong to authenticated user)."""
+    if demo_session_id and entry_id < 0:
+        r = get_redis()
+        session_entries = json.loads(r.get(f"demo:{demo_session_id}:entries") or "[]")
+        for e in session_entries:
+            if e["id"] == entry_id:
+                return JournalEntryResponse(**e)
+        raise HTTPException(status_code=404, detail="Entry not found")
+
     row = db.query(
         JournalEntry.id,
         JournalEntry.user_id,
@@ -448,9 +582,24 @@ def update_entry(
     entry_id: int,
     entry_update: JournalEntryUpdate,
     current_user: User = Depends(require_auth),
+    demo_session_id: Optional[str] = Depends(get_demo_session_id),
     db: Session = Depends(get_db)
 ):
     """Update a journal entry (must belong to authenticated user)."""
+    if demo_session_id and entry_id < 0:
+        # Demo session entry stored in Redis
+        r = get_redis()
+        entries_key = f"demo:{demo_session_id}:entries"
+        session_entries = json.loads(r.get(entries_key) or "[]")
+        for e in session_entries:
+            if e["id"] == entry_id:
+                e["title"] = entry_update.title
+                e["content"] = entry_update.content
+                e["edited_at"] = datetime.now(timezone.utc).isoformat()
+                r.setex(entries_key, DEMO_SESSION_TTL, json.dumps(session_entries))
+                return JournalEntryResponse(**e)
+        raise HTTPException(status_code=404, detail="Entry not found")
+
     entry = db.query(JournalEntry).filter(
         JournalEntry.id == entry_id,
         JournalEntry.user_id == current_user.id
@@ -480,6 +629,7 @@ def update_entry(
 def analyze_emotion(
     entry_id: int,
     current_user: User = Depends(require_auth),
+    demo_session_id: Optional[str] = Depends(get_demo_session_id),
     db: Session = Depends(get_db)
 ):
     """Queue emotion analysis for a journal entry (must belong to authenticated user).
@@ -487,6 +637,21 @@ def analyze_emotion(
     Returns a task_id that can be polled at GET /tasks/{task_id}.
     On SUCCESS the result contains: entry_id, emotion, emotion_score, all_emotions.
     """
+    if demo_session_id and entry_id < 0:
+        # Demo entry: read content from Redis and queue a Redis-only analysis task
+        r = get_redis()
+        session_entries = json.loads(r.get(f"demo:{demo_session_id}:entries") or "[]")
+        demo_entry = next((e for e in session_entries if e["id"] == entry_id), None)
+        if demo_entry is None:
+            raise HTTPException(status_code=404, detail="Entry not found")
+        task = analyze_demo_entry_task.delay(
+            demo_session_id=demo_session_id,
+            entry_id=entry_id,
+            content=demo_entry["content"],
+        )
+        ensure_worker_running()
+        return TaskStatusResponse(task_id=task.id, status=task.state, result=None)
+
     exists = db.query(JournalEntry.id).filter(
         JournalEntry.id == entry_id,
         JournalEntry.user_id == current_user.id
@@ -550,14 +715,49 @@ def bulk_analyze_emotions(
     )
 
 
+@app.post("/admin/embed-user", response_model=TaskStatusResponse)
+def admin_embed_user_entries(
+    body: BulkAnalyzeRequest = Body(default_factory=BulkAnalyzeRequest),
+    current_user: User = Depends(require_auth),
+    db: Session = Depends(get_db)
+):
+    """Queue embedding generation for all entries of a user that don't have one. Admin-only.
+    Specify user_id or email to target a user; omit both to use the current user."""
+    if current_user.email != ADMIN_EMAIL:
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+    if body.user_id is not None:
+        target_user = db.query(User).filter(User.id == body.user_id).first()
+        if target_user is None:
+            raise HTTPException(status_code=404, detail=f"User with id {body.user_id} not found")
+    elif body.email is not None and body.email.strip():
+        target_user = db.query(User).filter(User.email == body.email.strip()).first()
+        if target_user is None:
+            raise HTTPException(status_code=404, detail=f"User with email {body.email!r} not found")
+    else:
+        target_user = current_user
+
+    task = vectorize_all_entries.delay(target_user.id)
+    ensure_worker_running()
+
+    return TaskStatusResponse(task_id=task.id, status=task.state, result=None)
+
+
 @app.post("/entries/{entry_id}/tokenize", response_model=TaskStatusResponse)
 def tokenize_entry(
     entry_id: int,
     current_user: User = Depends(require_auth),
+    demo_session_id: Optional[str] = Depends(get_demo_session_id),
     db: Session = Depends(get_db)
 ):
     """Queue tokenization for a journal entry (must belong to authenticated user).
     Poll GET /tasks/{task_id} for result; on SUCCESS, result has entry_id, text, token_count, tokens, token_ids."""
+    if demo_session_id and entry_id < 0:
+        raise HTTPException(
+            status_code=400,
+            detail="Tokenization is not available for demo entries."
+        )
+
     exists = db.query(JournalEntry.id).filter(
         JournalEntry.id == entry_id,
         JournalEntry.user_id == current_user.id
@@ -574,9 +774,16 @@ def tokenize_entry(
 def embed_entry(
     entry_id: int,
     current_user: User = Depends(require_auth),
+    demo_session_id: Optional[str] = Depends(get_demo_session_id),
     db: Session = Depends(get_db)
 ):
     """Queue embedding generation for a journal entry (must belong to authenticated user)."""
+    if demo_session_id and entry_id < 0:
+        raise HTTPException(
+            status_code=400,
+            detail="Embedding generation is not available for demo entries."
+        )
+
     exists = db.query(JournalEntry.id).filter(
         JournalEntry.id == entry_id,
         JournalEntry.user_id == current_user.id
@@ -617,9 +824,14 @@ def find_similar_entries(
     entry_id: int,
     top_k: int = 5,
     current_user: User = Depends(require_auth),
+    demo_session_id: Optional[str] = Depends(get_demo_session_id),
     db: Session = Depends(get_db)
 ):
     """Find similar journal entries (only searches user's own entries)."""
+    if demo_session_id and entry_id < 0:
+        # Demo entries have no embeddings; return empty similarity result
+        return SemanticSearchResponse(query_entry_id=entry_id, similar_entries=[])
+
     entry = db.query(JournalEntry).options(load_only(
         JournalEntry.id,
         JournalEntry.embedding,
@@ -711,6 +923,7 @@ def semantic_search(
 def create_clustering_run(
     request: ClusteringRunRequest,
     current_user: User = Depends(require_auth),
+    demo_session_id: Optional[str] = Depends(get_demo_session_id),
     db: Session = Depends(get_db)
 ):
     """Queue clustering task for the authenticated user's entries with optional date filtering."""
@@ -723,7 +936,8 @@ def create_clustering_run(
         if request.end_date:
             end_date_str = request.end_date.isoformat()
         
-        # Queue the clustering task
+        # Queue the clustering task — pass demo_session_id so the worker stores
+        # results in Redis instead of Postgres when running in demo mode
         task = run_clustering_task.delay(
             user_id=current_user.id,
             start_date=start_date_str,
@@ -734,7 +948,8 @@ def create_clustering_run(
             cluster_selection_epsilon=request.cluster_selection_epsilon,
             umap_n_components=request.umap_n_components,
             umap_n_neighbors=request.umap_n_neighbors,
-            umap_min_dist=request.umap_min_dist
+            umap_min_dist=request.umap_min_dist,
+            demo_session_id=demo_session_id,
         )
         ensure_worker_running()
 
@@ -859,9 +1074,54 @@ def recommend_clustering_params(
 @app.get("/clustering/runs", response_model=List[ClusteringRunResponse])
 def get_clustering_runs(
     current_user: User = Depends(require_auth),
+    demo_session_id: Optional[str] = Depends(get_demo_session_id),
     db: Session = Depends(get_db)
 ):
     """Get all clustering runs for the authenticated user."""
+    result = []
+
+    # Demo mode: merge DB runs (seeded for demo user) with Redis session runs
+    if demo_session_id:
+        # 1. DB runs for demo user (positive IDs) — seeded so everyone sees one run
+        db_runs = db.query(ClusteringRun).filter(
+            ClusteringRun.user_id == current_user.id
+        ).order_by(ClusteringRun.run_timestamp.desc()).all()
+        for run in db_runs:
+            result.append(ClusteringRunResponse(
+                id=run.id,
+                run_timestamp=run.run_timestamp,
+                num_entries=run.num_entries,
+                num_clusters=run.num_clusters,
+                min_cluster_size=run.min_cluster_size,
+                min_samples=run.min_samples,
+                membership_threshold=run.membership_threshold,
+                noise_entries=run.noise_entries,
+                start_date=run.start_date,
+                end_date=run.end_date,
+            ))
+        # 2. Redis session runs (negative IDs) — created during this demo session
+        r = get_redis()
+        runs_raw = r.get(f"demo:{demo_session_id}:runs")
+        if runs_raw:
+            runs_data = json.loads(runs_raw)
+            for run in runs_data:
+                result.append(ClusteringRunResponse(
+                    id=run["id"],
+                    run_timestamp=datetime.fromisoformat(run["run_timestamp"]),
+                    num_entries=run["num_entries"],
+                    num_clusters=run["num_clusters"],
+                    min_cluster_size=run.get("min_cluster_size", 2),
+                    min_samples=run.get("min_samples"),
+                    membership_threshold=run.get("membership_threshold", 0.05),
+                    noise_entries=run.get("noise_entries", 0),
+                    start_date=datetime.fromisoformat(run["start_date"]) if run.get("start_date") else None,
+                    end_date=datetime.fromisoformat(run["end_date"]) if run.get("end_date") else None,
+                ))
+        # Sort merged list newest-first (DB runs are already sorted, but Redis runs
+        # are appended at the end — re-sort the combined list)
+        result.sort(key=lambda x: x.run_timestamp, reverse=True)
+        return result
+
     runs = db.query(ClusteringRun).filter(
         ClusteringRun.user_id == current_user.id
     ).order_by(ClusteringRun.run_timestamp.desc()).all()
@@ -887,9 +1147,21 @@ def get_clustering_runs(
 def get_cluster_visualization(
     run_id: int,
     current_user: User = Depends(require_auth),
+    demo_session_id: Optional[str] = Depends(get_demo_session_id),
     db: Session = Depends(get_db)
 ):
     """Get cluster visualization data for a specific run."""
+    # Demo runs are stored in Redis with negative IDs
+    if demo_session_id and run_id < 0:
+        r = get_redis()
+        viz_raw = r.get(f"demo:{demo_session_id}:run:{run_id}")
+        if not viz_raw:
+            raise HTTPException(status_code=404, detail="Demo clustering run not found")
+        viz_data = json.loads(viz_raw)
+        points = [ClusterPoint(**p) for p in viz_data["points"]]
+        clusters = [ClusterInfoResponse(**c) for c in viz_data["clusters"]]
+        return ClusterVisualizationResponse(run_id=run_id, points=points, clusters=clusters)
+
     run = db.query(ClusteringRun).filter(
         ClusteringRun.id == run_id,
         ClusteringRun.user_id == current_user.id
@@ -1284,9 +1556,45 @@ def ask_therapy_question(
 @app.get("/conversations", response_model=List[ConversationListItem])
 def list_conversations(
     current_user: User = Depends(require_auth),
+    demo_session_id: Optional[str] = Depends(get_demo_session_id),
     db: Session = Depends(get_db),
 ):
     """List all conversations for the current user, newest first."""
+    if demo_session_id:
+        result = []
+        # 1. DB conversations for demo user (positive IDs) — seeded so everyone sees one
+        db_convs = (
+            db.query(Conversation)
+            .filter(Conversation.user_id == current_user.id)
+            .order_by(Conversation.updated_at.desc())
+            .all()
+        )
+        for conv in db_convs:
+            count = db.query(func.count(ConversationMessage.id)).filter(
+                ConversationMessage.conversation_id == conv.id
+            ).scalar()
+            result.append(ConversationListItem(
+                id=conv.id,
+                title=conv.title,
+                created_at=conv.created_at,
+                updated_at=conv.updated_at,
+                message_count=count or 0,
+            ))
+        # 2. Redis session conversations (negative IDs) — created during this demo session
+        r = get_redis()
+        convs_raw = r.get(f"demo:{demo_session_id}:convs")
+        if convs_raw:
+            convs_data = json.loads(convs_raw)
+            for c in convs_data:
+                result.append(ConversationListItem(
+                    id=c["id"],
+                    title=c.get("title"),
+                    created_at=datetime.fromisoformat(c["created_at"]),
+                    updated_at=datetime.fromisoformat(c["updated_at"]),
+                    message_count=c.get("message_count", 0),
+                ))
+        return result
+
     conversations = (
         db.query(Conversation)
         .filter(Conversation.user_id == current_user.id)
@@ -1312,9 +1620,37 @@ def list_conversations(
 def get_conversation(
     conversation_id: int,
     current_user: User = Depends(require_auth),
+    demo_session_id: Optional[str] = Depends(get_demo_session_id),
     db: Session = Depends(get_db),
 ):
     """Get a conversation with all its messages."""
+    if demo_session_id and conversation_id < 0:
+        r = get_redis()
+        conv_raw = r.get(f"demo:{demo_session_id}:conv:{conversation_id}")
+        if not conv_raw:
+            raise HTTPException(status_code=404, detail="Conversation not found")
+        conv_data = json.loads(conv_raw)
+        messages = [
+            ConversationMessageResponse(
+                id=m["id"],
+                conversation_id=conversation_id,
+                role=m["role"],
+                content=m["content"],
+                steps=m.get("steps"),
+                is_error=m.get("is_error", False),
+                created_at=datetime.fromisoformat(m["created_at"]),
+            )
+            for m in conv_data.get("messages", [])
+        ]
+        return ConversationResponse(
+            id=conversation_id,
+            user_id=current_user.id,
+            title=conv_data.get("title"),
+            created_at=datetime.fromisoformat(conv_data["created_at"]),
+            updated_at=datetime.fromisoformat(conv_data["updated_at"]),
+            messages=messages,
+        )
+
     conv = db.query(Conversation).filter(
         Conversation.id == conversation_id,
         Conversation.user_id == current_user.id,
@@ -1328,6 +1664,7 @@ def get_conversation(
 def save_message(
     request: SaveMessageRequest,
     current_user: User = Depends(require_auth),
+    demo_session_id: Optional[str] = Depends(get_demo_session_id),
     db: Session = Depends(get_db),
 ):
     """
@@ -1335,6 +1672,79 @@ def save_message(
     conversation is created automatically. The conversation title is derived
     from the first user message (truncated to 80 chars).
     """
+    if demo_session_id:
+        r = get_redis()
+        now = datetime.now(timezone.utc).isoformat()
+
+        if request.conversation_id and request.conversation_id < 0:
+            # Existing demo conversation
+            conv_id = request.conversation_id
+            conv_key = f"demo:{demo_session_id}:conv:{conv_id}"
+            conv_raw = r.get(conv_key)
+            if not conv_raw:
+                raise HTTPException(status_code=404, detail="Conversation not found")
+            conv_data = json.loads(conv_raw)
+        else:
+            # New demo conversation
+            counter_key = f"demo:{demo_session_id}:conv_counter"
+            conv_id = -int(r.incr(counter_key))
+            r.expire(counter_key, DEMO_SESSION_TTL)
+            title = None
+            if request.role == "user":
+                title = request.content[:80] + ("…" if len(request.content) > 80 else "")
+            conv_data = {
+                "id": conv_id,
+                "title": title,
+                "created_at": now,
+                "updated_at": now,
+                "messages": [],
+            }
+
+        # Generate a new message ID within this conversation
+        msg_counter_key = f"demo:{demo_session_id}:msg_counter:{conv_id}"
+        msg_id = int(r.incr(msg_counter_key))
+        r.expire(msg_counter_key, DEMO_SESSION_TTL)
+
+        conv_data["messages"].append({
+            "id": msg_id,
+            "role": request.role,
+            "content": request.content,
+            "steps": request.steps,
+            "is_error": request.is_error,
+            "created_at": now,
+        })
+        conv_data["updated_at"] = now
+
+        # Update title from first user message if not yet set
+        if conv_data.get("title") is None and request.role == "user":
+            conv_data["title"] = request.content[:80] + ("…" if len(request.content) > 80 else "")
+
+        conv_key = f"demo:{demo_session_id}:conv:{conv_id}"
+        r.setex(conv_key, DEMO_SESSION_TTL, json.dumps(conv_data))
+
+        # Update the conversations list
+        convs_key = f"demo:{demo_session_id}:convs"
+        existing_convs = json.loads(r.get(convs_key) or "[]")
+        existing_ids = {c["id"] for c in existing_convs}
+        if conv_id not in existing_ids:
+            existing_convs.insert(0, {
+                "id": conv_id,
+                "title": conv_data["title"],
+                "created_at": conv_data["created_at"],
+                "updated_at": conv_data["updated_at"],
+                "message_count": len(conv_data["messages"]),
+            })
+        else:
+            for c in existing_convs:
+                if c["id"] == conv_id:
+                    c["title"] = conv_data["title"]
+                    c["updated_at"] = conv_data["updated_at"]
+                    c["message_count"] = len(conv_data["messages"])
+                    break
+        r.setex(convs_key, DEMO_SESSION_TTL, json.dumps(existing_convs))
+
+        return SaveMessageResponse(conversation_id=conv_id, message_id=msg_id)
+
     if request.conversation_id:
         conv = db.query(Conversation).filter(
             Conversation.id == request.conversation_id,
@@ -1373,9 +1783,23 @@ def save_message(
 def delete_conversation(
     conversation_id: int,
     current_user: User = Depends(require_auth),
+    demo_session_id: Optional[str] = Depends(get_demo_session_id),
     db: Session = Depends(get_db),
 ):
     """Delete a conversation and all its messages."""
+    if demo_session_id and conversation_id < 0:
+        r = get_redis()
+        conv_key = f"demo:{demo_session_id}:conv:{conversation_id}"
+        if not r.exists(conv_key):
+            raise HTTPException(status_code=404, detail="Conversation not found")
+        r.delete(conv_key)
+        # Remove from conversation list
+        convs_key = f"demo:{demo_session_id}:convs"
+        existing_convs = json.loads(r.get(convs_key) or "[]")
+        existing_convs = [c for c in existing_convs if c["id"] != conversation_id]
+        r.setex(convs_key, DEMO_SESSION_TTL, json.dumps(existing_convs))
+        return Response(status_code=204)
+
     conv = db.query(Conversation).filter(
         Conversation.id == conversation_id,
         Conversation.user_id == current_user.id,

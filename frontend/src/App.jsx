@@ -101,6 +101,7 @@ function App() {
   const [runningClustering, setRunningClustering] = useState(false)
   const [clusteringTaskId, setClusteringTaskId] = useState(null)
   const [clusteringTaskStatus, setClusteringTaskStatus] = useState(null)
+  const [clusteringCompleted, setClusteringCompleted] = useState(false)
   
   // Clustering parameters - optimized for many fine-grained clusters
   const [minClusterSize, setMinClusterSize] = useState(2)  // Reduced to 2 for more clusters
@@ -129,6 +130,11 @@ function App() {
   const [bulkAnalyzing, setBulkAnalyzing] = useState(false)
   const [bulkAnalyzeProgress, setBulkAnalyzeProgress] = useState(null)
   const [bulkAnalyzeTarget, setBulkAnalyzeTarget] = useState('')
+
+  // Admin generate-embeddings state
+  const [embedTarget, setEmbedTarget] = useState('')
+  const [embedLoading, setEmbedLoading] = useState(false)
+  const [embedResult, setEmbedResult] = useState(null)
 
   // Auth state
   const [user, setUser] = useState(null)
@@ -293,6 +299,28 @@ function App() {
     }
   }
 
+  // Handle demo login — starts a new session backed by the seeded demo user
+  const handleDemoLogin = async () => {
+    try {
+      setAuthLoading(true)
+      const response = await fetch(`${API_URL}/auth/demo`, { method: 'POST' })
+      if (!response.ok) {
+        const err = await response.json().catch(() => ({}))
+        throw new Error(err.detail || 'Demo mode unavailable')
+      }
+      const data = await response.json()
+      localStorage.setItem('auth_token', data.access_token)
+      setToken(data.access_token)
+      setUser(data.user)
+      setError(null)
+    } catch (err) {
+      setError(err.message || 'Demo mode unavailable. Please try again.')
+      console.error('Demo login error:', err)
+    } finally {
+      setAuthLoading(false)
+    }
+  }
+
   // Handle sign out
   const handleSignOut = () => {
     if (user?.id) {
@@ -303,18 +331,39 @@ function App() {
     setUser(null)
     setEntries([])
     setEmotionResults({})
-    
-    // Revoke Google session
+    setClusteringRuns([])
+    setClusterData(null)
+    setSelectedRunId(null)
+    setTherapyConversation([])
+    setConversationHistory([])
+    setCurrentConversationId(null)
+
+    // Revoke Google session (only relevant for real accounts)
     if (window.google) {
       window.google.accounts.id.disableAutoSelect()
     }
   }
+
+  // Persist clusteringTaskId to sessionStorage so it survives page reloads
+  useEffect(() => {
+    if (clusteringTaskId) {
+      sessionStorage.setItem('clustering_task_id', clusteringTaskId)
+    } else {
+      sessionStorage.removeItem('clustering_task_id')
+    }
+  }, [clusteringTaskId])
 
   // Fetch entries when user is authenticated
   useEffect(() => {
     if (user && token) {
       fetchEntries()
       fetchClusteringRuns()
+      // Restore in-progress clustering task if page was reloaded mid-run
+      const savedTaskId = sessionStorage.getItem('clustering_task_id')
+      if (savedTaskId) {
+        setClusteringTaskId(savedTaskId)
+        setRunningClustering(true)
+      }
     }
   }, [user, token])
   
@@ -383,6 +432,8 @@ function App() {
         return // No runs available yet
       }
       const data = await response.json()
+      // Sort newest first as a client-side safeguard
+      data.sort((a, b) => new Date(b.run_timestamp) - new Date(a.run_timestamp))
       setClusteringRuns(data)
       if (data.length > 0 && !selectedRunId) {
         setSelectedRunId(data[0].id)
@@ -550,10 +601,11 @@ function App() {
           // Task completed successfully
           setRunningClustering(false)
           setClusteringTaskId(null)
-          
+          setClusteringCompleted(true)
+
           // Refresh clustering runs list
           await fetchClusteringRuns()
-          
+
           // If the task result contains a run_id, select it
           if (taskData.result && taskData.result.run_id) {
             setSelectedRunId(taskData.result.run_id)
@@ -1005,6 +1057,71 @@ function App() {
     }
   }
 
+  const handleGenerateEmbeddings = async () => {
+    try {
+      setEmbedLoading(true)
+      setEmbedResult(null)
+      const trimmed = embedTarget.trim()
+      const body = {}
+      if (trimmed !== '') {
+        const asNum = parseInt(trimmed, 10)
+        if (String(asNum) === trimmed) {
+          body.user_id = asNum
+        } else {
+          body.email = trimmed
+        }
+      }
+      const response = await fetch(`${API_URL}/admin/embed-user`, {
+        method: 'POST',
+        headers: getAuthHeaders(),
+        body: JSON.stringify(body)
+      })
+      if (!response.ok) {
+        const errData = await response.json().catch(() => ({}))
+        const msg = typeof errData.detail === 'string' ? errData.detail : 'Failed to queue embeddings'
+        throw new Error(msg)
+      }
+      const data = await response.json()
+      const taskId = data.task_id
+      const poll = async () => {
+        try {
+          const statusRes = await fetch(`${API_URL}/tasks/${taskId}`, { headers: getAuthHeaders() })
+          if (!statusRes.ok) {
+            setEmbedResult({ error: 'Failed to check task status' })
+            setEmbedLoading(false)
+            return
+          }
+          const status = await statusRes.json()
+          if (status.status === 'SUCCESS' && status.result) {
+            const r = status.result
+            const processed = r.processed_count ?? r.total_entries ?? 0
+            const total = r.total_entries ?? processed
+            setEmbedResult({ done: true, processed, total })
+            setEmbedLoading(false)
+            if (entries.length && !body.user_id && !body.email) {
+              loadEntries()
+            }
+            return
+          }
+          if (status.status === 'FAILURE' || status.status === 'REVOKED') {
+            setEmbedResult({ error: status.error || 'Task failed' })
+            setEmbedLoading(false)
+            return
+          }
+          setTimeout(poll, 2000)
+        } catch (e) {
+          setEmbedResult({ error: e.message || 'Error checking status' })
+          setEmbedLoading(false)
+        }
+      }
+      setTimeout(poll, 1000)
+    } catch (err) {
+      setError(err.message || 'Generate embeddings failed.')
+      setEmbedLoading(false)
+      setEmbedResult({ error: err.message })
+    }
+  }
+
   const toggleEmotionBreakdown = (entryId) => {
     setExpandedEmotionEntries(prev => ({
       ...prev,
@@ -1097,6 +1214,21 @@ function App() {
               <div id="google-signin-button"></div>
             </div>
 
+            <div className="auth-divider">
+              <span>or</span>
+            </div>
+
+            <button
+              className="try-demo-button"
+              onClick={handleDemoLogin}
+              disabled={authLoading}
+            >
+              {authLoading ? 'Loading…' : 'Try the Demo'}
+            </button>
+            <p className="demo-note">
+              Explore 100 pre-loaded entries, clustering, and therapy questions — no account required. Your demo data is saved for 7 days.
+            </p>
+
             {!GOOGLE_CLIENT_ID && (
               <p className="config-warning">
                 ⚠️ Google Client ID not configured. Set VITE_GOOGLE_CLIENT_ID in your .env file.
@@ -1107,6 +1239,8 @@ function App() {
       </div>
     )
   }
+
+  const isDemoMode = user?.email === 'demo@reflectai.app'
 
   // Authenticated view
   return (
@@ -1122,7 +1256,9 @@ function App() {
               {user.email === 'mason@choey.com' && (
                 <span className="admin-badge">ADMIN</span>
               )}
-              {user.picture && (
+              {isDemoMode ? (
+                <span className="demo-badge">DEMO</span>
+              ) : user.picture && (
                 <img 
                   src={user.picture} 
                   alt={user.name || 'User'} 
@@ -1130,10 +1266,10 @@ function App() {
                   referrerPolicy="no-referrer"
                 />
               )}
-              <span className="user-name">{user.name || user.email}</span>
+              <span className="user-name">{isDemoMode ? 'Demo User' : (user.name || user.email)}</span>
             </div>
             <button onClick={handleSignOut} className="signout-button">
-              Sign Out
+              {isDemoMode ? 'Exit Demo' : 'Sign Out'}
             </button>
           </div>
           {user.email === 'mason@choey.com' && (
@@ -1164,12 +1300,72 @@ function App() {
                 className="admin-bulk-analyze-input"
                 aria-label="User ID or email for bulk analyze"
               />
+              <button
+                onClick={handleGenerateEmbeddings}
+                disabled={embedLoading}
+                className="admin-bulk-analyze-button"
+                title="Admin: Generate embeddings for entries of the specified user (or you if blank)"
+              >
+                {embedLoading ? '⏳ Embedding…' : '📐 Generate Embeddings'}
+              </button>
+              {embedResult && (
+                <span className="admin-bulk-progress">
+                  {embedResult.error
+                    ? embedResult.error
+                    : embedResult.done
+                      ? embedResult.total === 0
+                        ? 'All entries already had embeddings'
+                        : `Done — ${embedResult.processed}/${embedResult.total} embedded`
+                      : null}
+                </span>
+              )}
+              <input
+                type="text"
+                value={embedTarget}
+                onChange={(e) => setEmbedTarget(e.target.value)}
+                placeholder="User ID or email (blank = you)"
+                disabled={embedLoading}
+                className="admin-bulk-analyze-input"
+                aria-label="User ID or email for generate embeddings"
+              />
             </div>
           )}
         </div>
       </header>
 
       {error && <div className="error">{error}</div>}
+
+      {clusteringCompleted && activeTab !== 'clusters' && (
+        <div className="clustering-complete-banner">
+          <span>✅ Clustering completed!</span>
+          <button
+            className="clustering-complete-view-btn"
+            onClick={() => { setActiveTab('clusters'); setClusteringCompleted(false) }}
+          >
+            View Results
+          </button>
+          <button
+            className="clustering-complete-dismiss-btn"
+            onClick={() => setClusteringCompleted(false)}
+          >
+            ✕
+          </button>
+        </div>
+      )}
+
+      {isDemoMode && (
+        <div className="demo-banner">
+          <span className="demo-banner-icon">🎭</span>
+          <span>
+            You're exploring ReflectAI in <strong>demo mode</strong> with 100 pre-loaded journal entries. These journal entries are <strong>NOT</strong> mine, they are generated using AI for demonstration purposes.
+            New entries, clustering runs, and therapy conversations are saved to your demo session for 7 days.
+            They are never stored permanently.
+          </span>
+          <button className="demo-banner-cta" onClick={handleSignOut}>
+            Exit Demo
+          </button>
+        </div>
+      )}
 
       {/* Tabs */}
       <div className="tabs">
@@ -1183,7 +1379,7 @@ function App() {
           className={`tab ${activeTab === 'clusters' ? 'active' : ''}`}
           onClick={() => setActiveTab('clusters')}
         >
-          🔍 Clusters
+          🔍 Clusters{runningClustering ? ' ⏳' : ''}
         </button>
         <button
           className={`tab ${activeTab === 'therapy' ? 'active' : ''}`}
@@ -1345,6 +1541,11 @@ function App() {
 
           <form className="journal-form" onSubmit={handleSubmit}>
             <h2>New Entry</h2>
+            {isDemoMode && (
+              <p className="demo-form-note">
+                Demo entries are saved for your session only and will not be analyzed for emotion or clustering.
+              </p>
+            )}
             <input
               type="text"
               value={title}
