@@ -99,3 +99,5 @@ backend/condensed_tree_*.png
 
 .vercel
 .env*.local
+
+.mcp.json

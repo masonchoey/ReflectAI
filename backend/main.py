@@ -224,6 +224,7 @@ def get_current_user(
     except JWTError:
         return None
     
+    db.execute(text("SELECT set_config('app.current_user_id', :uid, true)"), {"uid": str(user_id)})
     user = db.query(User).filter(User.id == user_id).first()
     return user
 
@@ -249,6 +250,7 @@ def require_auth(
             detail="Invalid authentication token"
         )
     
+    db.execute(text("SELECT set_config('app.current_user_id', :uid, true)"), {"uid": str(user_id)})
     user = db.query(User).filter(User.id == user_id).first()
     if user is None:
         raise HTTPException(
@@ -311,12 +313,13 @@ def google_auth(auth_request: GoogleAuthRequest, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.google_id == google_user['google_id']).first()
     
     if user:
-        # Update last login and info
+        # Set session variable before UPDATE so the RLS policy allows it
+        db.execute(text("SELECT set_config('app.current_user_id', :uid, true)"), {"uid": str(user.id)})
         user.last_login = datetime.now(timezone.utc)
         user.name = google_user.get('name')
         user.picture = google_user.get('picture')
     else:
-        # Create new user
+        # INSERT is covered by an unrestricted INSERT policy — no session var needed
         user = User(
             google_id=google_user['google_id'],
             email=google_user['email'],
