@@ -1114,6 +1114,9 @@ def get_clustering_runs(
                     start_date=datetime.fromisoformat(run["start_date"]) if run.get("start_date") else None,
                     end_date=datetime.fromisoformat(run["end_date"]) if run.get("end_date") else None,
                 ))
+        # Sort merged list newest-first (DB runs are already sorted, but Redis runs
+        # are appended at the end — re-sort the combined list)
+        result.sort(key=lambda x: x.run_timestamp, reverse=True)
         return result
 
     runs = db.query(ClusteringRun).filter(

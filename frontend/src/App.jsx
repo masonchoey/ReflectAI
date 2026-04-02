@@ -90,6 +90,7 @@ function App() {
   const [runningClustering, setRunningClustering] = useState(false)
   const [clusteringTaskId, setClusteringTaskId] = useState(null)
   const [clusteringTaskStatus, setClusteringTaskStatus] = useState(null)
+  const [clusteringCompleted, setClusteringCompleted] = useState(false)
   
   // Clustering parameters - optimized for many fine-grained clusters
   const [minClusterSize, setMinClusterSize] = useState(2)  // Reduced to 2 for more clusters
@@ -321,11 +322,26 @@ function App() {
     }
   }
 
+  // Persist clusteringTaskId to sessionStorage so it survives page reloads
+  useEffect(() => {
+    if (clusteringTaskId) {
+      sessionStorage.setItem('clustering_task_id', clusteringTaskId)
+    } else {
+      sessionStorage.removeItem('clustering_task_id')
+    }
+  }, [clusteringTaskId])
+
   // Fetch entries when user is authenticated
   useEffect(() => {
     if (user && token) {
       fetchEntries()
       fetchClusteringRuns()
+      // Restore in-progress clustering task if page was reloaded mid-run
+      const savedTaskId = sessionStorage.getItem('clustering_task_id')
+      if (savedTaskId) {
+        setClusteringTaskId(savedTaskId)
+        setRunningClustering(true)
+      }
     }
   }, [user, token])
   
@@ -394,6 +410,8 @@ function App() {
         return // No runs available yet
       }
       const data = await response.json()
+      // Sort newest first as a client-side safeguard
+      data.sort((a, b) => new Date(b.run_timestamp) - new Date(a.run_timestamp))
       setClusteringRuns(data)
       if (data.length > 0 && !selectedRunId) {
         setSelectedRunId(data[0].id)
@@ -561,10 +579,11 @@ function App() {
           // Task completed successfully
           setRunningClustering(false)
           setClusteringTaskId(null)
-          
+          setClusteringCompleted(true)
+
           // Refresh clustering runs list
           await fetchClusteringRuns()
-          
+
           // If the task result contains a run_id, select it
           if (taskData.result && taskData.result.run_id) {
             setSelectedRunId(taskData.result.run_id)
@@ -1294,6 +1313,24 @@ function App() {
 
       {error && <div className="error">{error}</div>}
 
+      {clusteringCompleted && activeTab !== 'clusters' && (
+        <div className="clustering-complete-banner">
+          <span>✅ Clustering completed!</span>
+          <button
+            className="clustering-complete-view-btn"
+            onClick={() => { setActiveTab('clusters'); setClusteringCompleted(false) }}
+          >
+            View Results
+          </button>
+          <button
+            className="clustering-complete-dismiss-btn"
+            onClick={() => setClusteringCompleted(false)}
+          >
+            ✕
+          </button>
+        </div>
+      )}
+
       {isDemoMode && (
         <div className="demo-banner">
           <span className="demo-banner-icon">🎭</span>
@@ -1320,7 +1357,7 @@ function App() {
           className={`tab ${activeTab === 'clusters' ? 'active' : ''}`}
           onClick={() => setActiveTab('clusters')}
         >
-          🔍 Clusters
+          🔍 Clusters{runningClustering ? ' ⏳' : ''}
         </button>
         <button
           className={`tab ${activeTab === 'therapy' ? 'active' : ''}`}
