@@ -7,8 +7,10 @@ on:
     branches: ["**"]
 
 jobs:
+  # ── Mock-based E2E tests ─────────────────────────────────────────────────────
+  # Runs on every push and PR. No backend needed — all API calls are mocked.
   e2e:
-    name: Playwright E2E
+    name: Playwright E2E (mocked)
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -46,7 +48,7 @@ jobs:
       - name: Run E2E tests
         run: npx playwright test
         env:
-          CI: true
+          CI: "true"
           VITE_API_URL: http://localhost:8000
           VITE_GOOGLE_CLIENT_ID: test-client-id-for-ci
           VITE_SUPABASE_URL: ""
@@ -58,4 +60,65 @@ jobs:
         with:
           name: playwright-report
           path: frontend/playwright-report/
+          retention-days: 14
+
+  # ── Connectivity tests against real deployed services ────────────────────────
+  # Runs only on push to main (after deploy). Hits Fly.io, Vercel, OpenRouter.
+  # No secrets needed — uses the public demo endpoint.
+  connectivity:
+    name: Connectivity Tests (production)
+    runs-on: ubuntu-latest
+    # Only run after a successful push to main so we test the deployed version
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    defaults:
+      run:
+        working-directory: frontend
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        id: playwright-cache-conn
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('frontend/package-lock.json') }}
+
+      - name: Install Playwright browsers
+        if: steps.playwright-cache-conn.outputs.cache-hit != 'true'
+        run: npx playwright install --with-deps chromium
+
+      - name: Install Playwright system dependencies (cached hit)
+        if: steps.playwright-cache-conn.outputs.cache-hit == 'true'
+        run: npx playwright install-deps chromium
+
+      - name: Run connectivity tests
+        run: npx playwright test --config playwright.connectivity.config.js
+        env:
+          CI: "true"
+          PROD_API_URL: https://reflectai-api-icy-dust-4243.fly.dev
+          PROD_FRONTEND_URL: https://reflect-ai-nine.vercel.app
+          # The OpenRouter 503 UI sub-test spins up the Vite dev server locally
+          VITE_API_URL: http://localhost:8000
+          VITE_GOOGLE_CLIENT_ID: test-client-id-for-ci
+          VITE_SUPABASE_URL: ""
+          VITE_SUPABASE_ANON_KEY: ""
+
+      - name: Upload connectivity test report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: playwright-report-connectivity
+          path: frontend/playwright-report-connectivity/
           retention-days: 14

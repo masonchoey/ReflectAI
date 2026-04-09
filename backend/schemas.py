@@ -14,7 +14,7 @@ class UserResponse(BaseModel):
     email: str
     name: Optional[str] = None
     picture: Optional[str] = None
-    created_at: datetime
+    created_at: Optional[datetime] = None
     is_demo: bool = False
 
     class Config:

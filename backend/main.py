@@ -357,11 +357,16 @@ def demo_auth(db: Session = Depends(get_db)):
             detail="Demo mode is not available yet. Please seed the database first."
         )
 
-    # Backfill created_at if the seed SQL left it NULL (column default may not have fired)
+    # Backfill created_at if the seed SQL left it NULL (column default may not have fired).
+    # Use raw SQL to avoid SQLAlchemy StaleDataError from ORM-tracked UPDATE mismatches.
     if demo_user.created_at is None:
-        demo_user.created_at = datetime.now(timezone.utc)
+        now = datetime.now(timezone.utc)
+        db.execute(
+            text("UPDATE users SET created_at = :now WHERE id = :id AND created_at IS NULL"),
+            {"now": now, "id": demo_user.id},
+        )
         db.commit()
-        db.refresh(demo_user)
+        demo_user.created_at = now
 
     demo_session_id = str(uuid.uuid4())
 
@@ -623,6 +628,35 @@ def update_entry(
     db.commit()
     db.refresh(entry)
     return entry_to_response(entry)
+
+
+@app.delete("/entries/{entry_id}", status_code=204)
+def delete_entry(
+    entry_id: int,
+    current_user: User = Depends(require_auth),
+    demo_session_id: Optional[str] = Depends(get_demo_session_id),
+    db: Session = Depends(get_db)
+):
+    """Delete a journal entry (must belong to authenticated user)."""
+    if demo_session_id and entry_id < 0:
+        r = get_redis()
+        entries_key = f"demo:{demo_session_id}:entries"
+        session_entries = json.loads(r.get(entries_key) or "[]")
+        next_entries = [e for e in session_entries if e.get("id") != entry_id]
+        if len(next_entries) == len(session_entries):
+            raise HTTPException(status_code=404, detail="Entry not found")
+        r.setex(entries_key, DEMO_SESSION_TTL, json.dumps(next_entries))
+        return Response(status_code=204)
+
+    entry = db.query(JournalEntry).filter(
+        JournalEntry.id == entry_id,
+        JournalEntry.user_id == current_user.id
+    ).first()
+    if entry is None:
+        raise HTTPException(status_code=404, detail="Entry not found")
+    db.delete(entry)
+    db.commit()
+    return Response(status_code=204)
 
 
 @app.post("/entries/{entry_id}/analyze", response_model=TaskStatusResponse)

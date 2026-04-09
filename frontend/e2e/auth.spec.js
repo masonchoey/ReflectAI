@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test'
-import { setupApiMocks, setupAuthenticatedSession, MOCK_USER } from './helpers/mockApi.js'
+import { setupApiMocks, setupAuthenticatedSession } from './helpers/mockApi.js'
 
 test.describe('Authentication', () => {
   test('shows sign-in page when unauthenticated', async ({ page }) => {
@@ -65,10 +65,10 @@ test.describe('Authentication', () => {
     await setupAuthenticatedSession(page)
     await page.goto('/')
 
-    await expect(page.locator('.user-name')).toContainText('Demo User', { timeout: 10_000 })
+    await expect(page.locator('.user-name')).toContainText('Test User', { timeout: 10_000 })
 
     // Reload — token is in localStorage so should stay logged in
     await page.reload()
-    await expect(page.locator('.user-name')).toContainText('Demo User', { timeout: 10_000 })
+    await expect(page.locator('.user-name')).toContainText('Test User', { timeout: 10_000 })
   })
 })

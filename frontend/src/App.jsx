@@ -83,6 +83,7 @@ function App() {
   const [editTitle, setEditTitle] = useState('')
   const [editContent, setEditContent] = useState('')
   const [analyzingId, setAnalyzingId] = useState(null)
+  const [deletingId, setDeletingId] = useState(null)
   const [emotionResults, setEmotionResults] = useState({})
   const [expandedEmotionEntries, setExpandedEmotionEntries] = useState({})
   
@@ -726,6 +727,44 @@ function App() {
       setError('Could not update entry. Please try again.')
     } finally {
       setSubmitting(false)
+    }
+  }
+
+  const handleDeleteEntry = async (entry) => {
+    const label = entry.title?.trim() ? `"${entry.title.trim()}"` : 'this entry'
+    if (!window.confirm(`Delete ${label}? This cannot be undone.`)) return
+
+    try {
+      setDeletingId(entry.id)
+      const response = await fetch(`${API_URL}/entries/${entry.id}`, {
+        method: 'DELETE',
+        headers: getAuthHeaders(),
+      })
+      if (!response.ok) {
+        if (response.status === 401) {
+          handleSignOut()
+          return
+        }
+        throw new Error('Failed to delete entry')
+      }
+      setEntries((prev) => prev.filter((e) => e.id !== entry.id))
+      setEditingId((prev) => (prev === entry.id ? null : prev))
+      setEmotionResults((prev) => {
+        const next = { ...prev }
+        delete next[entry.id]
+        return next
+      })
+      setExpandedEmotionEntries((prev) => {
+        const next = { ...prev }
+        delete next[entry.id]
+        return next
+      })
+      setAnalyzingId((prev) => (prev === entry.id ? null : prev))
+      setError(null)
+    } catch (err) {
+      setError('Could not delete entry. Please try again.')
+    } finally {
+      setDeletingId(null)
     }
   }
 
@@ -1444,6 +1483,17 @@ function App() {
                           >
                             ✏️ Edit
                           </button>
+                          {!isDemoMode && (
+                            <button
+                              type="button"
+                              className="delete-entry-button"
+                              onClick={() => handleDeleteEntry(entry)}
+                              disabled={deletingId === entry.id}
+                              aria-label="Delete entry"
+                            >
+                              {deletingId === entry.id ? 'Deleting...' : '🗑️ Delete'}
+                            </button>
+                          )}
                         </div>
                       )}
                     </div>

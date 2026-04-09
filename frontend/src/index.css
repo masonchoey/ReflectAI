@@ -711,6 +711,31 @@ header .admin-panel {
   border-color: var(--accent-dim);
 }
 
+.delete-entry-button {
+  padding: 0.4rem 0.8rem;
+  font-family: 'DM Sans', sans-serif;
+  font-size: 0.85rem;
+  font-weight: 500;
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.2s;
+  white-space: nowrap;
+}
+
+.delete-entry-button:hover:not(:disabled) {
+  background: rgba(248, 81, 73, 0.12);
+  color: #f85149;
+  border-color: rgba(248, 81, 73, 0.45);
+}
+
+.delete-entry-button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
 .entry-card .content {
   font-family: 'Crimson Pro', Georgia, serif;
   font-size: 1.1rem;
