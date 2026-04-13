@@ -13,9 +13,8 @@ import {
   setupAuthenticatedSession,
   MOCK_CLUSTERING_RUN,
   MOCK_CLUSTER_VISUALIZATION,
+  API,
 } from './helpers/mockApi.js'
-
-const API = 'http://localhost:8000'
 const CLUSTER_TASK_ID = 'cluster-task-e2e-001'
 
 test.describe('Clustering', () => {

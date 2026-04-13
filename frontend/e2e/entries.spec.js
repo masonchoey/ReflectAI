@@ -3,9 +3,7 @@
  * - Create an entry, verify it appears, edit it, verify the update, delete it.
  */
 import { test, expect } from '@playwright/test'
-import { setupAuthenticatedSession, MOCK_ENTRIES } from './helpers/mockApi.js'
-
-const API = 'http://localhost:8000'
+import { setupAuthenticatedSession, MOCK_ENTRIES, API } from './helpers/mockApi.js'
 
 test.describe('Journal CRUD', () => {
   test.beforeEach(async ({ page }) => {

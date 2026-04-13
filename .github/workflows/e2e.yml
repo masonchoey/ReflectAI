@@ -6,12 +6,26 @@ on:
   pull_request:
     branches: ["**"]
 
+# ── Shared URL constants ──────────────────────────────────────────────────────
+# These are referenced by both jobs. Keeping them here makes it easy to update
+# when the Fly.io app name or Vercel URL changes.
+env:
+  VERCEL_URL: https://reflect-ai-nine.vercel.app
+  FLY_API_URL: https://reflectai-api-icy-dust-4243.fly.dev
+
 jobs:
   # ── Mock-based E2E tests ─────────────────────────────────────────────────────
-  # Runs on every push and PR. No backend needed — all API calls are mocked.
+  # Runs on every push / PR. Tests run against the deployed Vercel frontend.
+  # All backend API calls are intercepted by page.route() — no real API hits.
+  #
+  # Required env vars:
+  #   BASE_URL      — Playwright baseURL; must be the deployed Vercel frontend URL
+  #   VITE_API_URL  — must match the VITE_API_URL baked into the Vercel build
+  #                   so that page.route() patterns intercept the right requests
   e2e:
     name: Playwright E2E (mocked)
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     defaults:
       run:
         working-directory: frontend
@@ -45,14 +59,25 @@ jobs:
         if: steps.playwright-cache.outputs.cache-hit == 'true'
         run: npx playwright install-deps chromium
 
+      - name: Verify Vercel deployment is accessible
+        run: |
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$VERCEL_URL")
+          if [ "$STATUS" != "200" ]; then
+            echo "Vercel deployment returned HTTP $STATUS — aborting tests"
+            exit 1
+          fi
+          echo "Vercel deployment is up (HTTP $STATUS)"
+
       - name: Run E2E tests
-        run: npx playwright test
+        run: npm run test:e2e
         env:
           CI: "true"
-          VITE_API_URL: http://localhost:8000
-          VITE_GOOGLE_CLIENT_ID: test-client-id-for-ci
-          VITE_SUPABASE_URL: ""
-          VITE_SUPABASE_ANON_KEY: ""
+          # Frontend under test — no local dev server is started (playwright.config.js skips
+          # webServer when BASE_URL is not localhost)
+          BASE_URL: ${{ env.VERCEL_URL }}
+          # Must match VITE_API_URL baked into the Vercel build so page.route()
+          # intercepts the correct URLs (auth, entries, therapy, tasks, etc.)
+          VITE_API_URL: ${{ env.FLY_API_URL }}
 
       - name: Upload test report
         uses: actions/upload-artifact@v4
@@ -63,11 +88,18 @@ jobs:
           retention-days: 14
 
   # ── Connectivity tests against real deployed services ────────────────────────
-  # Runs only on push to main (after deploy). Hits Fly.io, Vercel, OpenRouter.
-  # No secrets needed — uses the public demo endpoint.
+  # Runs only on push to main (after deploy). Hits Fly.io, Vercel, and OpenRouter
+  # with real network calls — no mocking. Uses the public /auth/demo endpoint so
+  # no secrets are required.
+  #
+  # Required env vars:
+  #   PROD_API_URL      — Fly.io FastAPI base URL
+  #   PROD_FRONTEND_URL — Vercel frontend URL (used for browser navigation tests
+  #                       and the OpenRouter-503 UI sub-test)
   connectivity:
     name: Connectivity Tests (production)
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     # Only run after a successful push to main so we test the deployed version
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     defaults:
@@ -104,16 +136,13 @@ jobs:
         run: npx playwright install-deps chromium
 
       - name: Run connectivity tests
-        run: npx playwright test --config playwright.connectivity.config.js
+        run: npm run test:connectivity
         env:
           CI: "true"
-          PROD_API_URL: https://reflectai-api-icy-dust-4243.fly.dev
-          PROD_FRONTEND_URL: https://reflect-ai-nine.vercel.app
-          # The OpenRouter 503 UI sub-test spins up the Vite dev server locally
-          VITE_API_URL: http://localhost:8000
-          VITE_GOOGLE_CLIENT_ID: test-client-id-for-ci
-          VITE_SUPABASE_URL: ""
-          VITE_SUPABASE_ANON_KEY: ""
+          # Fly.io FastAPI — tested directly via HTTP request fixture
+          PROD_API_URL: ${{ env.FLY_API_URL }}
+          # Vercel frontend — used for browser navigation and the 503 UI sub-test
+          PROD_FRONTEND_URL: ${{ env.VERCEL_URL }}
 
       - name: Upload connectivity test report
         uses: actions/upload-artifact@v4

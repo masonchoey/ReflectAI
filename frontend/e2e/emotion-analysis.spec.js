@@ -8,9 +8,7 @@
  *   4. UI updates to show emotion label + score
  */
 import { test, expect } from '@playwright/test'
-import { setupAuthenticatedSession, MOCK_ENTRIES } from './helpers/mockApi.js'
-
-const API = 'http://localhost:8000'
+import { setupAuthenticatedSession, MOCK_ENTRIES, API } from './helpers/mockApi.js'
 const NEW_ENTRY_ID = 99
 const TASK_ID = 'emotion-poll-task-001'
 

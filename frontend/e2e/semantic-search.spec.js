@@ -12,9 +12,7 @@
  *      (we don't assert on specific model output content)
  */
 import { test, expect } from '@playwright/test'
-import { setupAuthenticatedSession } from './helpers/mockApi.js'
-
-const API = 'http://localhost:8000'
+import { setupAuthenticatedSession, API } from './helpers/mockApi.js'
 const THERAPY_TASK_ID = 'therapy-search-task-001'
 
 const MOCK_THERAPY_RESULT_WITH_SEARCH = {

@@ -10,9 +10,7 @@
  *   - Graceful error when the Celery task FAILS
  */
 import { test, expect } from '@playwright/test'
-import { setupAuthenticatedSession } from './helpers/mockApi.js'
-
-const API = 'http://localhost:8000'
+import { setupAuthenticatedSession, API } from './helpers/mockApi.js'
 const TASK_ID = 'therapy-e2e-task-001'
 
 const NORMAL_RESULT = {

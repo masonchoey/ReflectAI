@@ -187,30 +187,29 @@ test.describe('OpenRouter', () => {
   // ── OpenRouter 503 (mocked at UI level) ──────────────────────────────────
 
   test('UI shows graceful error when backend returns 503 (OpenRouter down)', async ({ page }) => {
-    // This sub-test uses a mocked local server, not the production API.
-    // It verifies that the React app handles a 503 gracefully.
-    const LOCAL_API = 'http://localhost:8000'
+    // This sub-test uses the production frontend with mocked API responses.
+    // page.route() intercepts at the browser level regardless of origin.
 
-    // Set up minimal auth mock
-    await page.route(`${LOCAL_API}/auth/me`, route =>
+    // Set up minimal auth mock against the production API URL
+    await page.route(`${PROD_API}/auth/me`, route =>
       route.fulfill({ json: { id: 1, email: 'demo@reflectai.app', name: 'Demo User', picture: null, google_id: 'x' } })
     )
-    await page.route(`${LOCAL_API}/entries`, route => route.fulfill({ json: [] }))
-    await page.route(`${LOCAL_API}/clustering/runs`, route => route.fulfill({ json: [] }))
-    await page.route(`${LOCAL_API}/clustering/runs/*/visualization`, route =>
+    await page.route(`${PROD_API}/entries`, route => route.fulfill({ json: [] }))
+    await page.route(`${PROD_API}/clustering/runs`, route => route.fulfill({ json: [] }))
+    await page.route(`${PROD_API}/clustering/runs/*/visualization`, route =>
       route.fulfill({ status: 404, json: {} })
     )
-    await page.route(`${LOCAL_API}/conversations`, route => route.fulfill({ json: [] }))
-    await page.route(`${LOCAL_API}/conversations/**`, route => route.fulfill({ json: [] }))
+    await page.route(`${PROD_API}/conversations`, route => route.fulfill({ json: [] }))
+    await page.route(`${PROD_API}/conversations/**`, route => route.fulfill({ json: [] }))
 
     // Simulate OpenRouter 503
-    await page.route(`${LOCAL_API}/therapy/ask`, route =>
+    await page.route(`${PROD_API}/therapy/ask`, route =>
       route.fulfill({ status: 503, json: { detail: 'OpenRouter service unavailable' } })
     )
 
     await page.addInitScript(() => localStorage.setItem('auth_token', 'demo-connectivity-token'))
 
-    await page.goto('http://localhost:5173')
+    await page.goto(PROD_FRONTEND)
     await expect(page.locator('.user-name')).toBeVisible({ timeout: 10_000 })
     await page.getByRole('button', { name: /therapy/i }).click()
     await expect(page.locator('textarea.therapy-input')).toBeVisible({ timeout: 5_000 })

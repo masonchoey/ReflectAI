@@ -1,5 +1,8 @@
 import { defineConfig, devices } from '@playwright/test'
 
+const BASE_URL = process.env.BASE_URL || 'http://localhost:5173'
+const isLocal = BASE_URL.startsWith('http://localhost')
+
 export default defineConfig({
   testDir: './e2e',
   // Connectivity tests run separately via playwright.connectivity.config.js
@@ -12,9 +15,12 @@ export default defineConfig({
     ['list'],
   ],
   use: {
-    baseURL: 'http://localhost:5173',
+    baseURL: BASE_URL,
     trace: 'on-first-retry',
     screenshot: 'only-on-failure',
+    // Generous timeouts for remote URLs (Vercel in CI); negligible for localhost
+    navigationTimeout: 30_000,
+    actionTimeout: 15_000,
   },
   projects: [
     {
@@ -22,16 +28,20 @@ export default defineConfig({
       use: { ...devices['Desktop Chrome'] },
     },
   ],
-  webServer: {
-    command: 'npm run dev',
-    url: 'http://localhost:5173',
-    reuseExistingServer: !process.env.CI,
-    timeout: 120_000,
-    env: {
-      VITE_API_URL: process.env.VITE_API_URL || 'http://localhost:8000',
-      VITE_GOOGLE_CLIENT_ID: process.env.VITE_GOOGLE_CLIENT_ID || 'test-client-id',
-      VITE_SUPABASE_URL: '',
-      VITE_SUPABASE_ANON_KEY: '',
+  // Only spin up the local Vite dev server when running against localhost.
+  // When BASE_URL points to the deployed Vercel app, no local server is needed.
+  ...(isLocal ? {
+    webServer: {
+      command: 'npm run dev',
+      url: 'http://localhost:5173',
+      reuseExistingServer: !process.env.CI,
+      timeout: 120_000,
+      env: {
+        VITE_API_URL: process.env.VITE_API_URL || 'http://localhost:8000',
+        VITE_GOOGLE_CLIENT_ID: process.env.VITE_GOOGLE_CLIENT_ID || 'test-client-id',
+        VITE_SUPABASE_URL: '',
+        VITE_SUPABASE_ANON_KEY: '',
+      },
     },
-  },
+  } : {}),
 })

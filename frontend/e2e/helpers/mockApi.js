@@ -131,12 +131,13 @@ export const MOCK_CONVERSATIONS = []
  * @param {Array} [options.clusteringRuns]  - clustering runs list (default: empty)
  * @param {object|null} [options.visualization] - visualization data for a specific run id
  */
+export const API = process.env.VITE_API_URL || 'http://localhost:8000'
+
 export async function setupApiMocks(page, options = {}) {
   const {
     clusteringRuns = MOCK_CLUSTERING_RUNS,
     visualization = null,
   } = options
-  const API = 'http://localhost:8000'
 
   // Auth — /auth/me returns user matching the token type
   await page.route(`${API}/auth/me`, route => {
