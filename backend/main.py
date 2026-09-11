@@ -1,9 +1,11 @@
 import os
 import math
 import json
+import logging
+import time
 import uuid
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Depends, HTTPException, status, Response, Body
+from fastapi import FastAPI, Depends, HTTPException, status, Response, Body, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session, load_only
@@ -16,7 +18,7 @@ from jose import JWTError, jwt
 import redis as redis_lib
 from env import load_root_env
 
-from database import engine, get_db, Base
+from database import engine, get_db, Base, SessionLocal
 from database import enable_pgvector_extension
 from models import JournalEntry, User, ClusteringRun, Cluster, EntryClusterAssignment, Conversation, ConversationMessage
 from schemas import (
@@ -34,6 +36,7 @@ from schemas import (
     ConversationMessageResponse,
 )
 from sqlalchemy import text, func
+from sqlalchemy.exc import SQLAlchemyError
 from tasks import (
     vectorize_entry,
     vectorize_all_entries,
@@ -57,6 +60,13 @@ ACCESS_TOKEN_EXPIRE_DAYS = 7
 
 # Google OAuth Configuration
 GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "")
+
+logger = logging.getLogger("reflectai.api")
+
+# Optional shared secret for /health/deps. When set, a caller that passes it in the
+# X-Diag-Token header also gets the raw exception text. Without it only the exception
+# class and SQLSTATE are returned, so the endpoint is safe to leave public.
+DIAG_TOKEN = os.getenv("DIAG_TOKEN", "")
 
 # Demo mode configuration
 DEMO_USER_GOOGLE_ID = "demo_google_id_001"
@@ -309,27 +319,38 @@ def google_auth(auth_request: GoogleAuthRequest, db: Session = Depends(get_db)):
     # Verify the Google token
     google_user = verify_google_token(auth_request.credential)
     
-    # Check if user exists
-    user = db.query(User).filter(User.google_id == google_user['google_id']).first()
-    
-    if user:
-        # Set session variable before UPDATE so the RLS policy allows it
-        db.execute(text("SELECT set_config('app.current_user_id', :uid, true)"), {"uid": str(user.id)})
-        user.last_login = datetime.now(timezone.utc)
-        user.name = google_user.get('name')
-        user.picture = google_user.get('picture')
-    else:
-        # INSERT is covered by an unrestricted INSERT policy — no session var needed
-        user = User(
-            google_id=google_user['google_id'],
-            email=google_user['email'],
-            name=google_user.get('name'),
-            picture=google_user.get('picture')
-        )
-        db.add(user)
-    
-    db.commit()
-    db.refresh(user)
+    try:
+        # Check if user exists
+        user = db.query(User).filter(User.google_id == google_user['google_id']).first()
+
+        if user:
+            # Set session variable before UPDATE so the RLS policy allows it
+            db.execute(text("SELECT set_config('app.current_user_id', :uid, true)"), {"uid": str(user.id)})
+            user.last_login = datetime.now(timezone.utc)
+            user.name = google_user.get('name')
+            user.picture = google_user.get('picture')
+        else:
+            # INSERT is covered by an unrestricted INSERT policy — no session var needed
+            user = User(
+                google_id=google_user['google_id'],
+                email=google_user['email'],
+                name=google_user.get('name'),
+                picture=google_user.get('picture')
+            )
+            db.add(user)
+
+        db.commit()
+        db.refresh(user)
+    except SQLAlchemyError as e:
+        # Without this the caller just gets an opaque 500 and the cause (unreachable
+        # database, RLS policy, duplicate google_id) is invisible from the client side.
+        db.rollback()
+        logger.exception("Google auth failed while reading/writing the users table")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Sign-in is temporarily unavailable: the user database could not be "
+                   "reached. See GET /health/deps for which dependency is down.",
+        ) from e
     
     # Create JWT token
     access_token = create_access_token({"user_id": user.id})
@@ -350,7 +371,17 @@ def google_auth(auth_request: GoogleAuthRequest, db: Session = Depends(get_db)):
 @app.post("/auth/demo", response_model=AuthResponse)
 def demo_auth(db: Session = Depends(get_db)):
     """Start a demo session. Returns a JWT for the shared demo user with a unique session ID."""
-    demo_user = db.query(User).filter(User.google_id == DEMO_USER_GOOGLE_ID).first()
+    try:
+        demo_user = db.query(User).filter(User.google_id == DEMO_USER_GOOGLE_ID).first()
+    except SQLAlchemyError as e:
+        db.rollback()
+        logger.exception("Demo auth failed while looking up the demo user")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Demo mode is temporarily unavailable: the database could not be "
+                   "reached. See GET /health/deps for which dependency is down.",
+        ) from e
+
     if demo_user is None:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -361,18 +392,32 @@ def demo_auth(db: Session = Depends(get_db)):
     # Use raw SQL to avoid SQLAlchemy StaleDataError from ORM-tracked UPDATE mismatches.
     if demo_user.created_at is None:
         now = datetime.now(timezone.utc)
-        db.execute(
-            text("UPDATE users SET created_at = :now WHERE id = :id AND created_at IS NULL"),
-            {"now": now, "id": demo_user.id},
-        )
-        db.commit()
+        try:
+            db.execute(
+                text("UPDATE users SET created_at = :now WHERE id = :id AND created_at IS NULL"),
+                {"now": now, "id": demo_user.id},
+            )
+            db.commit()
+        except SQLAlchemyError:
+            # A read-only/blocked UPDATE must not sink the whole demo session — the
+            # response only needs created_at, which we can fill in locally.
+            db.rollback()
+            logger.exception("Demo auth: created_at backfill failed (continuing)")
         demo_user.created_at = now
 
     demo_session_id = str(uuid.uuid4())
 
     # Mark session as active in Redis so we know it's valid
-    r = get_redis()
-    r.setex(f"demo:{demo_session_id}:init", DEMO_SESSION_TTL, "1")
+    try:
+        r = get_redis()
+        r.setex(f"demo:{demo_session_id}:init", DEMO_SESSION_TTL, "1")
+    except redis_lib.RedisError as e:
+        logger.exception("Demo auth failed while writing the session marker to Redis")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Demo mode is temporarily unavailable: the session store could not be "
+                   "reached. See GET /health/deps for which dependency is down.",
+        ) from e
 
     access_token = create_access_token({
         "user_id": demo_user.id,
@@ -425,6 +470,111 @@ def get_status():
         "status": "ready",
         "models": "celery_worker",
     }
+
+
+def _describe_exception(exc: BaseException, include_message: bool) -> dict:
+    """
+    Summarize an exception for /health/deps.
+
+    The class name plus the Postgres SQLSTATE is enough to tell the common failure
+    modes apart (unreachable host vs. permission/RLS vs. constraint violation) without
+    echoing a connection string — the raw message is only included for a caller that
+    proves it knows DIAG_TOKEN.
+    """
+    info = {"error_type": type(exc).__name__}
+    orig = getattr(exc, "orig", None)  # SQLAlchemy wraps the underlying DBAPI error
+    if orig is not None:
+        info["driver_error_type"] = type(orig).__name__
+        pgcode = getattr(orig, "pgcode", None)
+        if pgcode:
+            info["sqlstate"] = pgcode
+    if include_message:
+        info["message"] = str(exc)[:2000]
+    return info
+
+
+@app.get("/health/deps")
+def health_dependencies(
+    response: Response,
+    x_diag_token: Optional[str] = Header(default=None),
+):
+    """
+    Report reachability of every external dependency a login needs.
+
+    200 when all checks pass, 503 otherwise. Both /auth/google and /auth/demo depend on
+    Postgres, and /auth/demo additionally on Redis; when one of those is down the login
+    endpoints can only answer with an opaque 500, so this endpoint names the culprit.
+    """
+    include_message = bool(DIAG_TOKEN) and x_diag_token == DIAG_TOKEN
+    checks: dict = {}
+
+    db = SessionLocal()
+    try:
+        # Postgres reachable at all?
+        started = time.perf_counter()
+        try:
+            db.execute(text("SELECT 1"))
+            checks["database"] = {
+                "ok": True,
+                "latency_ms": round((time.perf_counter() - started) * 1000, 1),
+            }
+        except Exception as e:
+            db.rollback()
+            logger.exception("Health check: database probe failed")
+            checks["database"] = {"ok": False, **_describe_exception(e, include_message)}
+
+        # Is the seeded demo user actually visible to the role the API connects as?
+        # This is the exact lookup /auth/demo does, so it also surfaces RLS policies
+        # that hide the row or reject the query outright.
+        if checks["database"]["ok"]:
+            started = time.perf_counter()
+            try:
+                row = db.execute(
+                    text("SELECT id FROM users WHERE google_id = :gid"),
+                    {"gid": DEMO_USER_GOOGLE_ID},
+                ).first()
+                checks["demo_user"] = {
+                    "ok": row is not None,
+                    "latency_ms": round((time.perf_counter() - started) * 1000, 1),
+                }
+                if row is None:
+                    checks["demo_user"]["reason"] = (
+                        "No users row with the demo google_id is visible to the API database "
+                        "role — either the demo seed is missing or a row-level security "
+                        "policy is hiding it."
+                    )
+            except Exception as e:
+                db.rollback()
+                logger.exception("Health check: demo user probe failed")
+                checks["demo_user"] = {"ok": False, **_describe_exception(e, include_message)}
+        else:
+            checks["demo_user"] = {"ok": False, "skipped": "database unreachable"}
+    finally:
+        db.close()
+
+    # Redis backs both the Celery broker and demo session storage.
+    started = time.perf_counter()
+    try:
+        get_redis().ping()
+        checks["redis"] = {
+            "ok": True,
+            "latency_ms": round((time.perf_counter() - started) * 1000, 1),
+        }
+    except Exception as e:
+        logger.exception("Health check: redis probe failed")
+        checks["redis"] = {"ok": False, **_describe_exception(e, include_message)}
+
+    # Missing secrets fail every login just as reliably as a dead dependency.
+    checks["config"] = {
+        "ok": bool(SECRET_KEY) and bool(GOOGLE_CLIENT_ID),
+        "jwt_secret_key_set": bool(SECRET_KEY),
+        "google_client_id_set": bool(GOOGLE_CLIENT_ID),
+    }
+
+    all_ok = all(check.get("ok") for check in checks.values())
+    if not all_ok:
+        response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+    return {"ok": all_ok, "checks": checks}
 
 
 # ============== Protected Journal Endpoints ==============

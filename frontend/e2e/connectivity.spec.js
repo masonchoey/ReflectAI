@@ -6,6 +6,7 @@
  *
  * What each test checks:
  *   - Fly.io API     : GET /status returns { status: "ready" }
+ *   - Dependencies   : GET /health/deps reports Postgres, Redis and secrets all OK
  *   - Vercel         : Frontend homepage loads and contains "ReflectAI"
  *   - Demo Auth      : POST /auth/demo returns token + user (tests Fly.io + Postgres)
  *   - Redis / Celery : Queue an emotion analysis task, verify task_id returned and
@@ -67,6 +68,33 @@ test.describe('Fly.io API', () => {
   test('unauthenticated GET /entries returns 401 or 403', async ({ request }) => {
     const res = await request.get(`${PROD_API}/entries`)
     expect([401, 403]).toContain(res.status())
+  })
+})
+
+// ── Dependency health ─────────────────────────────────────────────────────────
+// /health/deps probes Postgres, Redis and the required secrets in one call. It is the
+// first thing to look at when a scheduled run goes red: a failing login is almost always
+// a dependency being unreachable, and this names which one.
+
+test.describe('Dependency health', () => {
+  test('GET /health/deps reports every dependency reachable', async ({ request }) => {
+    const res = await request.get(`${PROD_API}/health/deps`)
+    const body = await res.json().catch(() => null)
+
+    // Older deploys predate this endpoint — don't fail the whole run on a 404.
+    if (res.status() === 404) {
+      test.skip(true, '/health/deps not deployed yet')
+      return
+    }
+
+    const broken = body
+      ? Object.entries(body.checks || {})
+          .filter(([, check]) => !check.ok)
+          .map(([name, check]) => `${name}: ${JSON.stringify(check)}`)
+      : ['no JSON body returned']
+
+    expect(broken, `Unhealthy dependencies:\n${broken.join('\n')}`).toEqual([])
+    expect(res.status()).toBe(200)
   })
 })
 

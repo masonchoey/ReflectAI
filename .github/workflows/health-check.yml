@@ -1,0 +1,190 @@
+name: Scheduled Health Check
+
+# Periodic end-to-end check that the deployed stack is actually working.
+#
+# The mocked E2E suite (e2e.yml) intercepts every backend call, so it stays green even
+# when production is completely down. This workflow is the opposite: it only talks to
+# real deployed services, so it catches the failures users actually hit — a paused
+# database, an expired Redis instance, a rotated secret, an expired API key.
+#
+# Runs unattended, so a red run opens (or comments on) a GitHub issue.
+
+on:
+  schedule:
+    # 13:00 UTC every third day of the month (1st, 4th, 7th, ... 31st).
+    # Day-of-month stepping resets at month boundaries, so the gap is 1-3 days.
+    - cron: "0 13 */3 * *"
+  workflow_dispatch:
+    inputs:
+      api_url:
+        description: "Backend API base URL to check"
+        required: false
+        default: "https://reflectai-api-icy-dust-4243.fly.dev"
+      frontend_url:
+        description: "Frontend base URL to check"
+        required: false
+        default: "https://reflect-ai-nine.vercel.app"
+
+# Needed by the "open an issue on failure" step.
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: health-check
+  cancel-in-progress: false
+
+env:
+  FLY_API_URL: ${{ github.event.inputs.api_url || 'https://reflectai-api-icy-dust-4243.fly.dev' }}
+  VERCEL_URL: ${{ github.event.inputs.frontend_url || 'https://reflect-ai-nine.vercel.app' }}
+
+jobs:
+  health-check:
+    name: Production health check
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # ── Fast probe ────────────────────────────────────────────────────────
+      # Runs before Playwright so the log names the broken dependency even if the
+      # browser install or the test run later falls over. Never fails the job on its
+      # own — the Playwright suite below is what decides pass/fail.
+      - name: Probe API endpoints
+        id: probe
+        continue-on-error: true
+        run: |
+          set -uo pipefail
+          SUMMARY=""
+          probe() {
+            local label="$1" method="$2" url="$3"
+            local body status
+            body=$(curl -s -m 45 -X "$method" -w $'\n%{http_code}' "$url" || echo $'\n000')
+            status=$(printf '%s' "$body" | tail -n1)
+            body=$(printf '%s' "$body" | sed '$d')
+            echo "── $label ($method $url) → HTTP $status"
+            echo "$body" | head -c 2000
+            echo
+            SUMMARY="${SUMMARY}| \`${label}\` | ${status} |"$'\n'
+          }
+
+          # Fly.io suspends idle machines; the first request pays the resume cost.
+          probe "GET /"             GET  "$FLY_API_URL/"
+          probe "GET /status"       GET  "$FLY_API_URL/status"
+          probe "GET /health/deps"  GET  "$FLY_API_URL/health/deps"
+          probe "POST /auth/demo"   POST "$FLY_API_URL/auth/demo"
+          probe "GET frontend"      GET  "$VERCEL_URL/"
+
+          {
+            echo "### Endpoint probe"
+            echo
+            echo "| Endpoint | HTTP |"
+            echo "| --- | --- |"
+            printf '%s' "$SUMMARY"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # ── Full connectivity suite ───────────────────────────────────────────
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        id: playwright-cache
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('frontend/package-lock.json') }}
+
+      - name: Install Playwright browsers
+        working-directory: frontend
+        if: steps.playwright-cache.outputs.cache-hit != 'true'
+        run: npx playwright install --with-deps chromium
+
+      - name: Install Playwright system dependencies (cache hit)
+        working-directory: frontend
+        if: steps.playwright-cache.outputs.cache-hit == 'true'
+        run: npx playwright install-deps chromium
+
+      - name: Run connectivity tests
+        id: connectivity
+        working-directory: frontend
+        run: npm run test:connectivity
+        env:
+          CI: "true"
+          PROD_API_URL: ${{ env.FLY_API_URL }}
+          PROD_FRONTEND_URL: ${{ env.VERCEL_URL }}
+
+      - name: Upload connectivity report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: health-check-report-${{ github.run_number }}
+          path: frontend/playwright-report-connectivity/
+          retention-days: 30
+
+      # ── Alerting ──────────────────────────────────────────────────────────
+      # A scheduled run nobody watches is worthless, so failures become an issue.
+      # One issue is reused for consecutive failures; it is closed on the next green run.
+      - name: Open or update failure issue
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const title = 'Scheduled health check failing';
+            const label = 'health-check';
+
+            const { data: existing } = await github.rest.issues.listForRepo({
+              ...context.repo, state: 'open', labels: label,
+            });
+
+            const body = [
+              `The scheduled production health check failed.`,
+              ``,
+              `- Run: ${runUrl}`,
+              `- API: ${process.env.FLY_API_URL}`,
+              `- Frontend: ${process.env.VERCEL_URL}`,
+              ``,
+              `Check the **Probe API endpoints** step first — \`GET /health/deps\` names the`,
+              `dependency that is down (Postgres, Redis, or a missing secret).`,
+            ].join('\n');
+
+            if (existing.length > 0) {
+              await github.rest.issues.createComment({
+                ...context.repo, issue_number: existing[0].number, body,
+              });
+            } else {
+              await github.rest.issues.create({
+                ...context.repo, title, body, labels: [label],
+              });
+            }
+        env:
+          FLY_API_URL: ${{ env.FLY_API_URL }}
+          VERCEL_URL: ${{ env.VERCEL_URL }}
+
+      - name: Close failure issue after a green run
+        if: success()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const { data: existing } = await github.rest.issues.listForRepo({
+              ...context.repo, state: 'open', labels: 'health-check',
+            });
+            for (const issue of existing) {
+              await github.rest.issues.createComment({
+                ...context.repo, issue_number: issue.number,
+                body: `Health check is green again — ${runUrl}`,
+              });
+              await github.rest.issues.update({
+                ...context.repo, issue_number: issue.number, state: 'closed',
+              });
+            }
