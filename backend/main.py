@@ -75,9 +75,18 @@ DEMO_SESSION_TTL = 7 * 24 * 3600  # 7 days in seconds
 
 # Redis client for demo session storage (separate from Celery broker)
 def _create_redis_client() -> redis_lib.Redis:
+    # Timeouts keep a connection the server silently dropped (idle Upstash connection,
+    # resumed Fly machine) from hanging a request forever; retry_on_timeout reconnects once.
+    options = dict(
+        decode_responses=True,
+        socket_timeout=5,
+        socket_connect_timeout=5,
+        health_check_interval=30,
+        retry_on_timeout=True,
+    )
     if REDIS_URL.startswith("rediss://"):
-        return redis_lib.from_url(REDIS_URL, decode_responses=True, ssl_cert_reqs=None)
-    return redis_lib.from_url(REDIS_URL, decode_responses=True)
+        return redis_lib.from_url(REDIS_URL, ssl_cert_reqs=None, **options)
+    return redis_lib.from_url(REDIS_URL, **options)
 
 _redis_client: Optional[redis_lib.Redis] = None
 
